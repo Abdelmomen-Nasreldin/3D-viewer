@@ -18,17 +18,36 @@ import { Annotation } from '../services/annotation.model';
 /**
  * Hardcoded annotations for the Vodafone router.
  *
- * To find the right coordinates:
+ * Positions are estimated for a typical router shape. Fine-tune them:
  *   1. Place your router.glb in the public/ folder and run `ng serve`
  *   2. Click anywhere on the model -- the 3D point is logged to the browser console
- *   3. Copy the logged {x, y, z} values into the position tuples below
+ *   3. Copy the logged [x, y, z] values into the position tuples below
  */
 const ROUTER_ANNOTATIONS: Annotation[] = [
-  { id: 'front-led',   position: [0, 0, 0], text: 'Status LED' },
-  { id: 'power-port',  position: [0, 0, 0], text: 'Power Port' },
-  { id: 'ethernet',    position: [0, 0, 0], text: 'Ethernet Ports' },
-  { id: 'wps-button',  position: [0, 0, 0], text: 'WPS Button' },
-  { id: 'reset',       position: [0, 0, 0], text: 'Reset Button' },
+  // Front panel
+  { id: 'power-led',       position: [-0.90,  0.25,  0.75], text: 'Power LED — Solid green = powered on' },
+  { id: 'internet-led',    position: [-0.55,  0.25,  0.75], text: 'Internet LED — Green = connected, Red = no signal' },
+  { id: 'wifi-led',        position: [-0.20,  0.25,  0.75], text: 'Wi-Fi LED — Blinking = active traffic' },
+  { id: 'phone-led',       position: [ 0.15,  0.25,  0.75], text: 'Phone LED — Green = VoIP registered' },
+  { id: 'vodafone-logo',   position: [ 0.70,  0.25,  0.75], text: 'Vodafone Branding' },
+
+  // Back panel (ports & buttons)
+  { id: 'power-port',      position: [-1.10,  0.15, -0.75], text: 'DC Power Input — 12V adapter' },
+  { id: 'power-switch',    position: [-0.85,  0.15, -0.75], text: 'Power On/Off Switch' },
+  { id: 'dsl-port',        position: [-0.50,  0.10, -0.75], text: 'DSL/Fibre WAN Port — Connect to wall socket' },
+  { id: 'eth-1',           position: [-0.10,  0.10, -0.75], text: 'LAN Port 1 (Gigabit Ethernet)' },
+  { id: 'eth-2',           position: [ 0.20,  0.10, -0.75], text: 'LAN Port 2 (Gigabit Ethernet)' },
+  { id: 'eth-3',           position: [ 0.50,  0.10, -0.75], text: 'LAN Port 3 (Gigabit Ethernet)' },
+  { id: 'eth-4',           position: [ 0.80,  0.10, -0.75], text: 'LAN Port 4 (Gigabit Ethernet)' },
+  { id: 'phone-port',      position: [ 1.05,  0.10, -0.75], text: 'Phone Port (RJ11) — Analogue handset' },
+  { id: 'usb-port',        position: [ 1.30,  0.15, -0.75], text: 'USB Port — Storage / printer sharing' },
+
+  // Side / top buttons
+  { id: 'wps-button',      position: [ 1.40,  0.25,  0.00], text: 'WPS Button — Press to pair devices' },
+  { id: 'reset-button',    position: [-1.40,  0.10, -0.20], text: 'Reset Pinhole — Hold 10s to factory reset' },
+
+  // Top
+  { id: 'ventilation',     position: [ 0.00,  0.50,  0.00], text: 'Ventilation — Keep clear for airflow' },
 ];
 
 @Component({

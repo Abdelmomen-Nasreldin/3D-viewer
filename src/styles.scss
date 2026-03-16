@@ -20,33 +20,45 @@ body {
 
 /* Annotation CSS2D labels */
 .annotation-label {
+  position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
   pointer-events: auto;
-  transform: translate(-50%, -100%) translateY(-12px);
+  transform: translate(-50%, -100%) translateY(-18px);
+  cursor: default;
 }
 
 .annotation-text {
-  background: rgba(10, 25, 47, 0.92);
+  background: rgba(10, 25, 47, 0.94);
   color: #ccd6f6;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 11.5px;
   font-weight: 500;
-  border: 1px solid #00d4ff66;
+  line-height: 1.4;
+  border: 1px solid #00d4ff55;
   white-space: nowrap;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(4px);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(6px);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.annotation-label:hover .annotation-text {
+  border-color: #00d4ffaa;
+  box-shadow: 0 4px 24px rgba(0, 212, 255, 0.15);
 }
 
 .annotation-dot-connector {
   display: block;
   width: 2px;
-  height: 12px;
-  background: #00d4ff;
+  height: 16px;
+  background: linear-gradient(to bottom, #00d4ff, transparent);
   position: absolute;
-  bottom: -12px;
+  bottom: -16px;
   left: 50%;
   transform: translateX(-50%);
 }
