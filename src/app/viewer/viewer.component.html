@@ -5,10 +5,14 @@
         <button
           type="button"
           class="mode-btn primary"
-          [disabled]="!arChecked() || !arSupported()"
+          [disabled]="!arChecked() || !arSupported() || !modelLoaded()"
           (click)="startArSession()"
         >
-          Start room AR
+          @if (arSupported() && !modelLoaded()) {
+            Loading router…
+          } @else {
+            Start room AR
+          }
         </button>
       }
       @if (arSessionActive()) {
@@ -29,7 +33,10 @@
     }
     @if (arSessionActive()) {
       <p class="ar-hint">
-        Point at a floor or table. Tap to place the router; tap again to move it.
+        Point at a floor or table. When you see the cyan ring on a surface, tap to
+        place the router. You can also tap without a ring—each tap ray-casts to
+        surfaces. If nothing is detected, the router appears in front of you as a
+        fallback (first tap only).
       </p>
     }
   </div>

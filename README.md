@@ -6,7 +6,7 @@ This project was generated using [Angular CLI](https://github.com/angular/angula
 
 ## Room AR only
 
-There is **no** separate 3D orbit viewer and **no** `getUserMedia` camera overlay. The page loads the model, then the user taps **Start room AR** (requires a **user gesture**). If `immersive-ar` is not supported, the UI explains that room AR cannot run in that environment.
+There is **no** separate 3D orbit viewer and **no** `getUserMedia` camera overlay. The page loads **router.glb** first; **Start room AR** stays disabled until the model is ready. Placement uses **continuous hit-test** (cyan ring), **transient hit-test** on each tap (works even when the ring is missing), and a **fixed fallback** in front of the user on the first tap if both miss.
 
 ## Embedding (WebView)
 

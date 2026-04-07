@@ -18,6 +18,11 @@ import {
 } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { Annotation } from '../services/annotation.model';
 
+/** WebXR hit-test batch (not always in TS DOM lib). */
+interface TransientHitTestBatch {
+  readonly results: ReadonlyArray<XRHitTestResult>;
+}
+
 /**
  * Hotspot labels: `css2d` (default) or `sprite` if CSS2D misbehaves in a WebView.
  */
@@ -69,6 +74,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   readonly arSupported = signal(false);
   readonly arChecked = signal(false);
   readonly arSessionActive = signal(false);
+  readonly modelLoaded = signal(false);
 
   private renderer!: THREE.WebGLRenderer;
   private css2DRenderer!: CSS2DRenderer;
@@ -82,6 +88,9 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
   private hitTestSource: XRHitTestSource | null = null;
   private hitTestSourceRequested = false;
+  private transientHitTestSource: XRTransientInputHitTestSource | null = null;
+  private sessionSelectHandler: ((e: Event) => void) | null = null;
+  private xrSessionRef: XRSession | null = null;
   private readonly tmpMatrix = new THREE.Matrix4();
   private readonly tmpScale = new THREE.Vector3();
 
@@ -117,7 +126,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   async startArSession(): Promise<void> {
-    if (!navigator.xr || !this.arSupported()) return;
+    if (!navigator.xr || !this.arSupported() || !this.modelLoaded()) return;
 
     const overlayRoot = this.domOverlayRef.nativeElement;
     const withOverlay: XRSessionInit = {
@@ -137,10 +146,15 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       } catch {
         session = await navigator.xr.requestSession('immersive-ar', minimal);
       }
-      session.addEventListener('end', () => this.onArSessionEnded());
-
       this.renderer.xr.setReferenceSpaceType('local');
       await this.renderer.xr.setSession(session);
+
+      this.xrSessionRef = session;
+      session.addEventListener('end', () => this.onArSessionEnded());
+      this.sessionSelectHandler = (e: Event) => this.onArSelect(e);
+      session.addEventListener('select', this.sessionSelectHandler);
+
+      void this.requestTransientHitTestSource(session);
 
       this.applyArPresentationStyle();
       this.placedGroup.visible = false;
@@ -156,10 +170,20 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private onArSessionEnded(): void {
+    if (this.xrSessionRef && this.sessionSelectHandler) {
+      this.xrSessionRef.removeEventListener('select', this.sessionSelectHandler);
+      this.sessionSelectHandler = null;
+    }
+    this.xrSessionRef = null;
+
     this.hitTestSourceRequested = false;
     if (this.hitTestSource) {
       this.hitTestSource.cancel();
       this.hitTestSource = null;
+    }
+    if (this.transientHitTestSource) {
+      this.transientHitTestSource.cancel();
+      this.transientHitTestSource = null;
     }
 
     this.applyIdlePresentationStyle();
@@ -248,19 +272,103 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
   private initXrControllers(): void {
     for (let i = 0; i < 2; i++) {
-      const c = this.renderer.xr.getController(i);
-      c.addEventListener('select', () => this.onArSelect());
-      this.scene.add(c);
+      this.scene.add(this.renderer.xr.getController(i));
     }
   }
 
-  private onArSelect(): void {
-    if (!this.reticle.visible) return;
-    this.reticle.matrix.decompose(
+  private async requestTransientHitTestSource(session: XRSession): Promise<void> {
+    type SessionWithTransient = XRSession & {
+      requestHitTestSourceForTransientInput?: (opts: {
+        profile: string;
+      }) => Promise<XRTransientInputHitTestSource>;
+    };
+    const s = session as SessionWithTransient;
+    if (typeof s.requestHitTestSourceForTransientInput !== 'function') {
+      console.debug('Room AR: requestHitTestSourceForTransientInput not supported');
+      return;
+    }
+    const profiles = ['touch', 'generic-touchscreen'];
+    for (const profile of profiles) {
+      try {
+        const source = await s.requestHitTestSourceForTransientInput({ profile });
+        if (source) {
+          this.transientHitTestSource = source;
+          return;
+        }
+      } catch {
+        continue;
+      }
+    }
+    console.debug('Room AR: could not create transient hit-test source for profiles', profiles);
+  }
+
+  private onArSelect(ev?: Event): void {
+    const referenceSpace = this.renderer.xr.getReferenceSpace();
+    if (!referenceSpace) return;
+
+    if (this.reticle.visible) {
+      this.applyPlacedGroupFromMatrix(this.reticle.matrix);
+      return;
+    }
+
+    const xrEvent = ev as XRInputSourceEvent | undefined;
+    if (this.transientHitTestSource && xrEvent?.frame) {
+      const pose = this.firstTransientHitPose(
+        xrEvent.frame,
+        xrEvent,
+        referenceSpace
+      );
+      if (pose) {
+        this.tmpMatrix.fromArray(pose.transform.matrix);
+        this.applyPlacedGroupFromMatrix(this.tmpMatrix);
+        return;
+      }
+      console.debug('Room AR: transient hit test returned no results');
+    }
+
+    if (!this.placedGroup.visible) {
+      this.applyFallbackPlacement();
+    }
+  }
+
+  private firstTransientHitPose(
+    frame: XRFrame,
+    event: XRInputSourceEvent,
+    referenceSpace: XRReferenceSpace
+  ): XRPose | null {
+    if (!this.transientHitTestSource) return null;
+    const fn = (frame as XRFrame & { getHitTestResultsForTransientInput?: unknown })
+      .getHitTestResultsForTransientInput;
+    if (typeof fn !== 'function') return null;
+    const batches = (
+      fn as (
+        src: XRTransientInputHitTestSource,
+        ev: XRInputSourceEvent
+      ) => ReadonlyArray<TransientHitTestBatch>
+    ).call(frame, this.transientHitTestSource, event);
+    for (const batch of batches) {
+      for (const result of batch.results) {
+        const pose = result.getPose(referenceSpace);
+        if (pose) return pose;
+      }
+    }
+    return null;
+  }
+
+  private applyPlacedGroupFromMatrix(matrix: THREE.Matrix4): void {
+    matrix.decompose(
       this.placedGroup.position,
       this.placedGroup.quaternion,
       this.tmpScale
     );
+    this.placedGroup.scale.set(1, 1, 1);
+    this.placedGroup.visible = true;
+  }
+
+  /** Last resort in local space when continuous reticle and transient hits both miss (first placement only). */
+  private applyFallbackPlacement(): void {
+    this.placedGroup.position.set(0, -0.45, -1.1);
+    this.placedGroup.quaternion.identity();
     this.placedGroup.scale.set(1, 1, 1);
     this.placedGroup.visible = true;
   }
@@ -291,6 +399,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
         this.placedGroup.add(this.model);
         this.placeAnnotations();
+        this.modelLoaded.set(true);
+        this.zone.run(() => this.cdr.markForCheck());
       },
       undefined,
       (error) => console.error('Error loading router.glb:', error)
