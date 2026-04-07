@@ -7,18 +7,11 @@ import {
   NgZone,
   ChangeDetectorRef,
   inject,
-  input,
   signal,
 } from '@angular/core';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import {
-  CSS2DRenderer,
-  CSS2DObject,
-} from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { THREEx } from '@ar-js-org/ar.js-threejs';
-import { Annotation } from '../services/annotation.model';
 
 /** WebXR hit-test batch (not always in TS DOM lib). */
 interface TransientHitTestBatch {
@@ -30,35 +23,6 @@ type HitResultWithAnchor = XRHitTestResult & {
   createAnchor?: () => Promise<XRAnchor>;
 };
 
-/**
- * Hotspot labels: `css2d` (default) or `sprite` if CSS2D misbehaves in a WebView.
- */
-export type ViewerLabelRender = 'css2d' | 'sprite';
-
-/**
- * Hardcoded annotations for the Vodafone router.
- * Fine-tune positions against your GLB (e.g. temporary logging from a desktop Three.js scene).
- */
-const ROUTER_ANNOTATIONS: Annotation[] = [
-  { id: 'power-led', position: [-0.9, 0.25, 0.75], text: 'Power LED — Solid green = powered on' },
-  { id: 'internet-led', position: [-0.55, 0.25, 0.75], text: 'Internet LED — Green = connected, Red = no signal' },
-  { id: 'wifi-led', position: [-0.2, 0.25, 0.75], text: 'Wi-Fi LED — Blinking = active traffic' },
-  { id: 'phone-led', position: [0.15, 0.25, 0.75], text: 'Phone LED — Green = VoIP registered' },
-  { id: 'vodafone-logo', position: [0.7, 0.25, 0.75], text: 'Vodafone Branding' },
-  { id: 'power-port', position: [-1.1, 0.15, -0.75], text: 'DC Power Input — 12V adapter' },
-  { id: 'power-switch', position: [-0.85, 0.15, -0.75], text: 'Power On/Off Switch' },
-  { id: 'dsl-port', position: [-0.5, 0.1, -0.75], text: 'DSL/Fibre WAN Port — Connect to wall socket' },
-  { id: 'eth-1', position: [-0.1, 0.1, -0.75], text: 'LAN Port 1 (Gigabit Ethernet)' },
-  { id: 'eth-2', position: [0.2, 0.1, -0.75], text: 'LAN Port 2 (Gigabit Ethernet)' },
-  { id: 'eth-3', position: [0.5, 0.1, -0.75], text: 'LAN Port 3 (Gigabit Ethernet)' },
-  { id: 'eth-4', position: [0.8, 0.1, -0.75], text: 'LAN Port 4 (Gigabit Ethernet)' },
-  { id: 'phone-port', position: [1.05, 0.1, -0.75], text: 'Phone Port (RJ11) — Analogue handset' },
-  { id: 'usb-port', position: [1.3, 0.15, -0.75], text: 'USB Port — Storage / printer sharing' },
-  { id: 'wps-button', position: [1.4, 0.25, 0], text: 'WPS Button — Press to pair devices' },
-  { id: 'reset-button', position: [-1.4, 0.1, -0.2], text: 'Reset Pinhole — Hold 10s to factory reset' },
-  { id: 'ventilation', position: [0, 0.5, 0], text: 'Ventilation — Keep clear for airflow' },
-];
-
 @Component({
   selector: 'app-viewer',
   standalone: true,
@@ -69,9 +33,6 @@ const ROUTER_ANNOTATIONS: Annotation[] = [
   },
 })
 export class ViewerComponent implements AfterViewInit, OnDestroy {
-  /** Set to `sprite` if CSS2D labels fail inside your WebView. */
-  readonly labelRender = input<ViewerLabelRender>('css2d');
-
   @ViewChild('rendererContainer', { static: true })
   containerRef!: ElementRef<HTMLDivElement>;
 
@@ -86,11 +47,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   readonly modelLoaded = signal(false);
 
   private renderer!: THREE.WebGLRenderer;
-  private css2DRenderer!: CSS2DRenderer;
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
-  private orbitControls!: OrbitControls;
-  private orbitKeyLight!: THREE.DirectionalLight;
   private resizeObserver!: ResizeObserver;
   private model: THREE.Group | null = null;
   private readonly placedGroup = new THREE.Group();
@@ -114,8 +72,11 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   private readonly tmpMatrix = new THREE.Matrix4();
   private readonly tmpScale = new THREE.Vector3();
 
-  private spriteMaterials: THREE.SpriteMaterial[] = [];
-  private spriteNodes: THREE.Sprite[] = [];
+  /**
+   * `loadModel` normalizes the GLB so its largest axis ≈ 3 units; in WebXR that reads like meters and feels huge.
+   * Scale the whole placed group only while room AR is presenting.
+   */
+  private readonly roomArPlacedScale = 0.14;
 
   private readonly zone = inject(NgZone);
   private readonly cdr = inject(ChangeDetectorRef);
@@ -124,7 +85,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.initScene();
     this.initRenderers();
     this.initLights();
-    this.initOrbitControls();
     this.initReticle();
     this.initXrControllers();
     this.placedGroup.visible = false;
@@ -143,10 +103,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.stopMarkerArSession();
     this.clearPlacementAnchor();
     this.resizeObserver?.disconnect();
-    this.clearSpriteLabels();
-    this.orbitControls?.dispose();
     this.renderer?.dispose();
-    this.css2DRenderer?.domElement.remove();
   }
 
   async startMarkerArSession(): Promise<void> {
@@ -162,7 +119,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.stopMarkerArSession();
 
     try {
-      this.orbitControls.enabled = false;
       this.applyArPresentationStyle();
       THREEx.ArToolkitContext.baseURL = this.arJsAssetBaseUrl();
 
@@ -246,7 +202,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
     this.placedGroup.removeFromParent();
     this.scene.add(this.placedGroup);
-    this.resetPlacedGroupForOrbit();
+    this.resetPlacedGroupTransform();
+    this.placedGroup.visible = false;
 
     if (this.markerRoot) {
       this.markerRoot.removeFromParent();
@@ -255,8 +212,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
     this.markerArActive.set(false);
     this.markerArBusy.set(false);
-    this.applyOrbitPresentationStyle();
-    this.orbitControls.enabled = true;
+    this.applyIdlePresentationStyle();
     this.zone.run(() => this.cdr.markForCheck());
   }
 
@@ -264,7 +220,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     if (!navigator.xr || !this.arSupported() || !this.modelLoaded()) return;
 
     this.stopMarkerArSession();
-    this.orbitControls.enabled = false;
 
     const overlayRoot = this.domOverlayRef.nativeElement;
     const withOverlay: XRSessionInit = {
@@ -330,13 +285,12 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.clearPlacementAnchor();
     this.lastViewerHitResult = null;
 
-    this.applyOrbitPresentationStyle();
+    this.applyIdlePresentationStyle();
     this.ensurePlacedGroupOnSceneForWebXr();
-    this.resetPlacedGroupForOrbit();
-    this.placedGroup.visible = true;
+    this.resetPlacedGroupTransform();
+    this.placedGroup.visible = false;
     this.reticle.visible = false;
     this.arSessionActive.set(false);
-    this.orbitControls.enabled = true;
     this.zone.run(() => this.cdr.markForCheck());
   }
 
@@ -372,7 +326,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     const h = container.clientHeight || 1;
 
     this.camera = new THREE.PerspectiveCamera(45, w / h, 0.01, 1000);
-    this.camera.position.set(2.6, 1.5, 2.6);
+    this.camera.position.set(0, 1.6, 0);
   }
 
   private initRenderers(): void {
@@ -389,14 +343,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.renderer.xr.enabled = true;
     container.appendChild(this.renderer.domElement);
 
-    this.css2DRenderer = new CSS2DRenderer();
-    this.css2DRenderer.setSize(w, h);
-    this.css2DRenderer.domElement.style.position = 'absolute';
-    this.css2DRenderer.domElement.style.top = '0';
-    this.css2DRenderer.domElement.style.left = '0';
-    this.css2DRenderer.domElement.style.pointerEvents = 'none';
-    container.appendChild(this.css2DRenderer.domElement);
-
     this.resizeObserver = new ResizeObserver(() => this.onResize());
     this.resizeObserver.observe(container);
   }
@@ -406,18 +352,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.arHemisphere.position.set(0.5, 1, 0.25);
     this.arHemisphere.visible = false;
     this.scene.add(this.arHemisphere);
-
-    this.orbitKeyLight = new THREE.DirectionalLight(0xffffff, 1.15);
-    this.orbitKeyLight.position.set(5, 10, 7);
-    this.scene.add(this.orbitKeyLight);
-  }
-
-  private initOrbitControls(): void {
-    this.orbitControls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.orbitControls.enableDamping = true;
-    this.orbitControls.dampingFactor = 0.06;
-    this.orbitControls.target.set(0, 0.12, 0);
-    this.orbitControls.update();
   }
 
   private arJsAssetBaseUrl(): string {
@@ -486,7 +420,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  private resetPlacedGroupForOrbit(): void {
+  private resetPlacedGroupTransform(): void {
     this.placedGroup.position.set(0, 0, 0);
     this.placedGroup.quaternion.identity();
     this.placedGroup.scale.set(1, 1, 1);
@@ -501,10 +435,19 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private initReticle(): void {
-    const geom = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x00d4ff });
+    // Larger ring (~0.6 m outer dia.) so it’s visible; depthTest off so real-world depth doesn’t hide it in AR.
+    const geom = new THREE.RingGeometry(0.22, 0.34, 48).rotateX(-Math.PI / 2);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x00e8ff,
+      transparent: true,
+      opacity: 0.92,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
     this.reticle = new THREE.Mesh(geom, mat);
     this.reticle.matrixAutoUpdate = false;
+    this.reticle.renderOrder = 10000;
     this.reticle.visible = false;
     this.scene.add(this.reticle);
   }
@@ -526,7 +469,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       console.debug('Room AR: requestHitTestSourceForTransientInput not supported');
       return;
     }
-    const profiles = ['touch', 'generic-touchscreen'];
+    const profiles = ['touch', 'generic-touchscreen', 'generic-trigger'];
     for (const profile of profiles) {
       try {
         const source = await s.requestHitTestSourceForTransientInput({ profile });
@@ -632,7 +575,9 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.placedGroup.quaternion,
       this.tmpScale
     );
-    this.placedGroup.scale.set(1, 1, 1);
+    this.placedGroup.scale.setScalar(
+      this.renderer.xr.isPresenting ? this.roomArPlacedScale : 1
+    );
   }
 
   private updatePlacedGroupFromAnchor(frame: XRFrame): void {
@@ -648,11 +593,14 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.applyPlacedGroupFromMatrix(this.tmpMatrix);
   }
 
-  /** Last resort in local space when continuous reticle and transient hits both miss (first placement only). */
+  /**
+   * When the cyan ring never appears, continuous hit-test often fails; taps may land here.
+   * Place farther than before so the model does not fill the screen like a “huge” close object.
+   */
   private applyFallbackPlacement(): void {
-    this.placedGroup.position.set(0, -0.45, -1.1);
+    this.placedGroup.position.set(0, -0.85, -2.85);
     this.placedGroup.quaternion.identity();
-    this.placedGroup.scale.set(1, 1, 1);
+    this.placedGroup.scale.setScalar(this.roomArPlacedScale);
     this.placedGroup.visible = true;
   }
 
@@ -681,8 +629,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         this.model.position.sub(center.multiplyScalar(scale));
 
         this.placedGroup.add(this.model);
-        this.placeAnnotations();
-        this.placedGroup.visible = true;
+        this.placedGroup.visible = false;
         this.modelLoaded.set(true);
         this.zone.run(() => this.cdr.markForCheck());
       },
@@ -691,146 +638,22 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     );
   }
 
-  private placeAnnotations(): void {
-    const mode = this.labelRender();
-    if (mode === 'sprite') {
-      this.placeSpriteAnnotations();
-    } else {
-      this.placeCss2dAnnotations();
-    }
-
-    for (const ann of ROUTER_ANNOTATIONS) {
-      const [x, y, z] = ann.position;
-      if (x === 0 && y === 0 && z === 0) continue;
-
-      const dot = new THREE.Mesh(
-        new THREE.SphereGeometry(0.03, 16, 16),
-        new THREE.MeshBasicMaterial({ color: 0x00d4ff })
-      );
-      dot.position.set(x, y, z);
-      this.placedGroup.add(dot);
-    }
-  }
-
-  private placeCss2dAnnotations(): void {
-    for (const ann of ROUTER_ANNOTATIONS) {
-      const [x, y, z] = ann.position;
-      if (x === 0 && y === 0 && z === 0) continue;
-
-      const wrapper = document.createElement('div');
-      wrapper.className = 'annotation-label';
-      wrapper.innerHTML = `
-        <span class="annotation-dot-connector"></span>
-        <span class="annotation-text">${ann.text}</span>
-      `;
-
-      const label = new CSS2DObject(wrapper);
-      label.position.set(x, y, z);
-      this.placedGroup.add(label);
-    }
-  }
-
-  private placeSpriteAnnotations(): void {
-    this.clearSpriteLabels();
-    const worldScale = 0.008;
-
-    for (const ann of ROUTER_ANNOTATIONS) {
-      const [x, y, z] = ann.position;
-      if (x === 0 && y === 0 && z === 0) continue;
-
-      const sprite = this.createTextSprite(ann.text);
-      sprite.position.set(x, y + 0.12, z);
-      const sw = sprite.userData['width'] as number;
-      const sh = sprite.userData['height'] as number;
-      sprite.scale.set(sw * worldScale, sh * worldScale, 1);
-      this.placedGroup.add(sprite);
-      this.spriteNodes.push(sprite);
-    }
-  }
-
-  private createTextSprite(text: string): THREE.Sprite {
-    const pad = 16;
-    const fontSize = 28;
-    const maxW = 640;
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d')!;
-    ctx.font = `500 ${fontSize}px Inter, system-ui, sans-serif`;
-
-    const words = text.split(' ');
-    const lines: string[] = [];
-    let line = '';
-    for (const w of words) {
-      const test = line ? `${line} ${w}` : w;
-      if (ctx.measureText(test).width > maxW && line) {
-        lines.push(line);
-        line = w;
-      } else {
-        line = test;
-      }
-    }
-    if (line) lines.push(line);
-
-    const lineH = Math.round(fontSize * 1.35);
-    const textW = Math.max(...lines.map((l) => ctx.measureText(l).width), 40);
-    canvas.width = Math.ceil(Math.min(textW + pad * 2, maxW + pad * 2));
-    canvas.height = lines.length * lineH + pad * 2;
-
-    ctx.font = `500 ${fontSize}px Inter, system-ui, sans-serif`;
-    ctx.fillStyle = 'rgba(10, 25, 47, 0.94)';
-    ctx.strokeStyle = 'rgba(0, 212, 255, 0.35)';
-    ctx.lineWidth = 2;
-    const W = canvas.width;
-    const H = canvas.height;
-    ctx.fillRect(0, 0, W, H);
-    ctx.strokeRect(1, 1, W - 2, H - 2);
-
-    ctx.fillStyle = '#ccd6f6';
-    lines.forEach((l, i) => {
-      ctx.fillText(l, pad, pad + fontSize + i * lineH);
-    });
-
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.needsUpdate = true;
-    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true });
-    this.spriteMaterials.push(mat);
-    const sprite = new THREE.Sprite(mat);
-    sprite.userData['width'] = W;
-    sprite.userData['height'] = H;
-    sprite.center.set(0.5, 0);
-    return sprite;
-  }
-
-  private clearSpriteLabels(): void {
-    for (const s of this.spriteNodes) {
-      this.placedGroup.remove(s);
-    }
-    this.spriteNodes = [];
-    for (const m of this.spriteMaterials) {
-      m.map?.dispose();
-      m.dispose();
-    }
-    this.spriteMaterials = [];
-  }
-
   private applyArPresentationStyle(): void {
     this.scene.background = null;
     this.renderer.setClearColor(0x000000, 0);
     if (this.arHemisphere) {
       this.arHemisphere.visible = true;
     }
-    this.orbitKeyLight.visible = false;
     this.scene.environment = null;
-    this.reticle.visible = false;
   }
 
-  private applyOrbitPresentationStyle(): void {
+  /** Idle launcher: no 3D preview—router is only shown inside an AR session. */
+  private applyIdlePresentationStyle(): void {
     this.scene.background = new THREE.Color(0x1a1a2e);
     this.renderer.setClearColor(0x000000, 1);
     if (this.arHemisphere) {
       this.arHemisphere.visible = false;
     }
-    this.orbitKeyLight.visible = true;
     this.scene.environment = null;
   }
 
@@ -843,7 +666,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
-    this.css2DRenderer.setSize(w, h);
     this.resizeMarkerArToContainer();
   }
 
@@ -852,8 +674,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
     if (this.markerArActive() && this.arToolkitSource?.ready && this.arToolkitContext) {
       this.arToolkitContext.update(this.arToolkitSource.domElement);
-    } else if (!presenting) {
-      this.orbitControls.update();
     }
 
     if (presenting && frame) {
@@ -896,6 +716,5 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     }
 
     this.renderer.render(this.scene, this.camera);
-    this.css2DRenderer.render(this.scene, this.camera);
   }
 }

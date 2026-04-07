@@ -9,11 +9,11 @@
           (click)="startMarkerArSession()"
         >
           @if (!modelLoaded()) {
-            Loading router…
+            Preparing AR…
           } @else if (markerArBusy()) {
             Starting camera…
           } @else {
-            Marker AR
+            Start marker AR
           }
         </button>
         <button
@@ -36,15 +36,21 @@
         </button>
       }
     </header>
+    @if (!arSessionActive() && !markerArActive()) {
+      <p class="ar-intro">
+        AR only: the router appears after you start <strong>marker AR</strong> (camera + Hiro pattern) or
+        <strong>room AR</strong> (WebXR on supported devices). There is no separate 3D viewer.
+      </p>
+    }
     @if (!arChecked()) {
       <p class="ar-status">Checking WebXR support…</p>
     }
     @if (arChecked() && !arSupported()) {
       <p class="ar-info">
         <strong>Room AR</strong> needs WebXR <code>immersive-ar</code> in this browser or WebView.
-        Use <strong>Marker AR</strong> instead: print or display the
+        Use <strong>marker AR</strong>: print or display the
         <a href="https://raw.githubusercontent.com/AR-js-org/AR.js/master/data/images/hiro.png" target="_blank" rel="noopener noreferrer">Hiro marker</a>
-        (same pattern as <code>public/ar-js/patt.hiro</code>) and point the camera at it. HTTPS and camera permission required.
+        (same pattern as <code>public/ar-js/patt.hiro</code>). HTTPS and camera permission required.
       </p>
     }
     @if (markerArActive()) {
@@ -54,8 +60,8 @@
     }
     @if (arSessionActive()) {
       <p class="ar-hint">
-        Point at a floor or table. When you see the cyan ring on a surface, tap to place the router. You can also tap without a ring—each tap ray-casts to
-        surfaces. If nothing is detected, the router appears in front of you as a fallback (first tap only).
+        Aim at a <strong>floor or table</strong> with some texture; move the phone slowly until a <strong>large cyan ring</strong> locks on—then tap to place.
+        If you never see the ring, the first tap still tries to ray-hit the surface; otherwise the router is placed <strong>farther ahead</strong> so it should not fill the whole screen.
       </p>
     }
   </div>

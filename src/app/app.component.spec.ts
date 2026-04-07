@@ -19,6 +19,6 @@ describe('AppComponent', () => {
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
     expect(compiled.querySelector('app-viewer')).toBeTruthy();
-    expect(compiled.textContent).toMatch(/Marker AR|Loading router|Room AR/);
+    expect(compiled.textContent).toMatch(/marker AR|Preparing AR|Room AR|AR only/i);
   });
 });
