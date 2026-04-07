@@ -277,10 +277,18 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private initReticle(): void {
-    const geom = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x00d4ff });
+    const geom = new THREE.RingGeometry(0.18, 0.28, 48).rotateX(-Math.PI / 2);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x00d4ff,
+      side: THREE.DoubleSide,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.95,
+    });
     this.reticle = new THREE.Mesh(geom, mat);
     this.reticle.matrixAutoUpdate = false;
+    this.reticle.renderOrder = 999;
     this.reticle.visible = false;
     this.scene.add(this.reticle);
   }
@@ -627,16 +635,22 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       const session = this.renderer.xr.getSession();
       if (referenceSpace && session) {
         if (!this.hitTestSourceRequested) {
-          session.requestReferenceSpace('viewer').then((viewerSpace) => {
-            const requestHitTestSource = session.requestHitTestSource;
-            if (typeof requestHitTestSource !== 'function') return;
-            const hitPromise = requestHitTestSource({ space: viewerSpace });
-            if (!hitPromise) return;
-            void hitPromise.then((source) => {
-              this.hitTestSource = source;
-            });
-          });
           this.hitTestSourceRequested = true;
+          void session
+            .requestReferenceSpace('viewer')
+            .then((viewerSpace) => {
+              const requestHitTestSource = session.requestHitTestSource;
+              if (typeof requestHitTestSource !== 'function') return;
+              const hitPromise = requestHitTestSource({ space: viewerSpace });
+              if (!hitPromise) return;
+              return hitPromise;
+            })
+            .then((source) => {
+              if (source) this.hitTestSource = source;
+            })
+            .catch((err) => {
+              console.warn('Room AR: continuous hit-test source failed', err);
+            });
         }
 
         if (this.hitTestSource) {
