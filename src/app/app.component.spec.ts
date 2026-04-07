@@ -14,16 +14,12 @@ describe('AppComponent', () => {
     expect(app).toBeTruthy();
   });
 
-  it(`should have the '3d-viewer' title`, () => {
-    const fixture = TestBed.createComponent(AppComponent);
-    const app = fixture.componentInstance;
-    expect(app.title).toEqual('3d-viewer');
-  });
-
-  it('should render title', () => {
+  it('should render viewer chrome', () => {
     const fixture = TestBed.createComponent(AppComponent);
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('h1')?.textContent).toContain('Hello, 3d-viewer');
+    expect(compiled.querySelector('app-viewer')).toBeTruthy();
+    expect(compiled.textContent).toContain('3D view');
+    expect(compiled.textContent).toContain('Over camera');
   });
 });

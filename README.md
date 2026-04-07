@@ -1,6 +1,35 @@
 # 3dViewer
 
+Angular + Three.js viewer for a Vodafone router GLB, with **3D orbit view**, **Over camera** (live camera + model + labels via `getUserMedia`—no WebXR), and optional **Room AR** (WebXR hit-test when the WebView supports it).
+
 This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 19.2.15.
+
+## Frontend-first embedding (no native app release)
+
+The recommended path for Vodafone’s existing WebView is **Over camera**: deploy a new build of this web app only. Users get a rear-camera feed with the router and hotspot labels composited in Three.js. That uses standard **`navigator.mediaDevices.getUserMedia`**; many WebViews already allow camera for HTTPS origins without any change to the native wrapper.
+
+**Room AR** (WebXR) is an extra when the WebView exposes `immersive-ar`; it is not required for “see the router on the camera”.
+
+## Embedding in the Vodafone native app (WebView)
+
+Ship this UI over **HTTPS**.
+
+| Topic | Android | iOS |
+|--------|---------|-----|
+| URL | HTTPS | HTTPS |
+| **Over camera** | WebView allows **camera** for this origin (often already true) | Same; standard camera permission flow for web content |
+| **Room AR (WebXR)** | Recent **Android System WebView** (WebXR support varies) | **WKWebView** on an iOS version that exposes WebXR AR where supported |
+| Settings | Hardware acceleration on; avoid mixed HTTP content | `allowsInlineMediaPlayback` if you use inline media |
+
+If WebXR is missing, **Over camera** and **3D view** still work; the UI explains that room AR is unavailable in that WebView.
+
+### Sprite labels in difficult WebViews
+
+If CSS2D labels mis-layer or disappear in AR on a specific WebView build, use sprite labels:
+
+```html
+<app-viewer [labelRender]="'sprite'" />
+```
 
 ## Development server
 
