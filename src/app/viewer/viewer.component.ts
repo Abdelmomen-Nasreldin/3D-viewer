@@ -9,10 +9,8 @@ import {
   inject,
   input,
   signal,
-  computed,
 } from '@angular/core';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
   CSS2DRenderer,
@@ -27,11 +25,7 @@ export type ViewerLabelRender = 'css2d' | 'sprite';
 
 /**
  * Hardcoded annotations for the Vodafone router.
- *
- * Positions are estimated for a typical router shape. Fine-tune them:
- *   1. Place your router.glb in the public/ folder and run `ng serve`
- *   2. Click anywhere on the model -- the 3D point is logged to the browser console
- *   3. Copy the logged [x, y, z] values into the position tuples below
+ * Fine-tune positions against your GLB (e.g. temporary logging from a desktop Three.js scene).
  */
 const ROUTER_ANNOTATIONS: Annotation[] = [
   { id: 'power-led', position: [-0.9, 0.25, 0.75], text: 'Power LED — Solid green = powered on' },
@@ -75,46 +69,24 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   readonly arSupported = signal(false);
   readonly arChecked = signal(false);
   readonly arSessionActive = signal(false);
-  /** Live camera + model overlay — works in typical WebViews via getUserMedia (no WebXR). */
-  readonly cameraSessionActive = signal(false);
-  readonly immersiveActive = computed(
-    () => this.arSessionActive() || this.cameraSessionActive()
-  );
 
   private renderer!: THREE.WebGLRenderer;
   private css2DRenderer!: CSS2DRenderer;
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
-  private controls!: OrbitControls;
   private resizeObserver!: ResizeObserver;
-  private readonly raycaster = new THREE.Raycaster();
-  private readonly mouse = new THREE.Vector2();
   private model: THREE.Group | null = null;
   private readonly placedGroup = new THREE.Group();
   private reticle!: THREE.Mesh;
   private arHemisphere: THREE.HemisphereLight | null = null;
-  private readonly orbitLights: THREE.Object3D[] = [];
 
   private hitTestSource: XRHitTestSource | null = null;
   private hitTestSourceRequested = false;
   private readonly tmpMatrix = new THREE.Matrix4();
-  private readonly tmpVec = new THREE.Vector3();
-  private readonly tmpQuat = new THREE.Quaternion();
   private readonly tmpScale = new THREE.Vector3();
 
   private spriteMaterials: THREE.SpriteMaterial[] = [];
   private spriteNodes: THREE.Sprite[] = [];
-
-  private mediaStream: MediaStream | null = null;
-  private videoEl: HTMLVideoElement | null = null;
-  private videoTexture: THREE.VideoTexture | null = null;
-  private videoMesh: THREE.Mesh | null = null;
-  private readonly savedOrbitCameraPos = new THREE.Vector3();
-  private readonly savedOrbitCameraQuat = new THREE.Quaternion();
-  private readonly savedOrbitTarget = new THREE.Vector3();
-  private readonly camPointers = new Map<number, { x: number; y: number }>();
-  private pinchRef: { dist: number; scale: number } | null = null;
-  private readonly camDragSens = 0.0028;
 
   private readonly zone = inject(NgZone);
   private readonly cdr = inject(ChangeDetectorRef);
@@ -123,10 +95,9 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.initScene();
     this.initRenderers();
     this.initLights();
-    this.initControls();
     this.initReticle();
     this.initXrControllers();
-    this.initDevClickLogger();
+    this.placedGroup.visible = false;
     this.scene.add(this.placedGroup);
     this.loadModel();
     this.renderer.setAnimationLoop((t, frame) => this.onAnimationFrame(t, frame));
@@ -139,95 +110,13 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     if (session) {
       session.end();
     }
-    this.stopCameraSession();
     this.resizeObserver?.disconnect();
-    this.controls?.dispose();
     this.clearSpriteLabels();
     this.renderer?.dispose();
     this.css2DRenderer?.domElement.remove();
   }
 
-  focus3DView(): void {
-    this.exitImmersive();
-  }
-
-  exitImmersive(): void {
-    if (this.renderer?.xr.isPresenting) {
-      this.renderer.xr.getSession()?.end();
-    }
-    this.stopCameraSession();
-  }
-
-  async startCameraSession(): Promise<void> {
-    if (this.cameraSessionActive()) return;
-    if (this.renderer?.xr.isPresenting) {
-      this.renderer.xr.getSession()?.end();
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      console.warn('getUserMedia is not available in this context.');
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
-        audio: false,
-      });
-      this.mediaStream = stream;
-
-      const video = document.createElement('video');
-      video.playsInline = true;
-      video.muted = true;
-      video.setAttribute('playsinline', 'true');
-      video.srcObject = stream;
-      await video.play();
-      this.videoEl = video;
-
-      const tex = new THREE.VideoTexture(video);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      this.videoTexture = tex;
-
-      const geom = new THREE.PlaneGeometry(1, 1);
-      const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.frustumCulled = false;
-      mesh.renderOrder = -2000;
-      this.videoMesh = mesh;
-      this.camera.add(mesh);
-      this.updateVideoBackdropScale();
-      video.addEventListener('loadedmetadata', () => this.updateVideoBackdropScale());
-
-      this.scene.remove(this.placedGroup);
-      this.camera.add(this.placedGroup);
-      this.placedGroup.position.set(0, -0.06, -1.15);
-      this.placedGroup.quaternion.identity();
-      this.placedGroup.scale.set(1, 1, 1);
-
-      this.savedOrbitCameraPos.copy(this.camera.position);
-      this.savedOrbitCameraQuat.copy(this.camera.quaternion);
-      this.savedOrbitTarget.copy(this.controls.target);
-      this.camera.position.set(0, 0, 0);
-      this.camera.quaternion.identity();
-      this.controls.target.set(0, 0, -1);
-      this.controls.update();
-      this.controls.enabled = false;
-
-      this.applyArPresentationStyle();
-      this.renderer.domElement.style.touchAction = 'none';
-      this.setupCameraPointerHandlers();
-
-      this.cameraSessionActive.set(true);
-      this.zone.run(() => this.cdr.markForCheck());
-    } catch (err) {
-      console.warn('Camera overlay session failed:', err);
-      this.mediaStream?.getTracks().forEach((t) => t.stop());
-      this.mediaStream = null;
-      this.zone.run(() => this.cdr.markForCheck());
-    }
-  }
-
   async startArSession(): Promise<void> {
-    this.stopCameraSession();
     if (!navigator.xr || !this.arSupported()) return;
 
     const overlayRoot = this.domOverlayRef.nativeElement;
@@ -253,7 +142,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.renderer.xr.setReferenceSpaceType('local');
       await this.renderer.xr.setSession(session);
 
-      this.controls.enabled = false;
       this.applyArPresentationStyle();
       this.placedGroup.visible = false;
       this.arSessionActive.set(true);
@@ -274,9 +162,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.hitTestSource = null;
     }
 
-    this.controls.enabled = true;
-    this.applyOrbitPresentationStyle();
-    this.placedGroup.visible = true;
+    this.applyIdlePresentationStyle();
+    this.placedGroup.visible = false;
     this.reticle.visible = false;
     this.arSessionActive.set(false);
     this.zone.run(() => this.cdr.markForCheck());
@@ -314,7 +201,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     const h = container.clientHeight || 1;
 
     this.camera = new THREE.PerspectiveCamera(45, w / h, 0.01, 1000);
-    this.camera.position.set(0, 2, 5);
+    this.camera.position.set(0, 1.6, 0);
   }
 
   private initRenderers(): void {
@@ -344,34 +231,10 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private initLights(): void {
-    const ambient = new THREE.AmbientLight('#ffffff', 0.6);
-    this.scene.add(ambient);
-    this.orbitLights.push(ambient);
-
-    const dir = new THREE.DirectionalLight('#ffffff', 0.8);
-    dir.position.set(5, 10, 7);
-    dir.castShadow = true;
-    this.scene.add(dir);
-    this.orbitLights.push(dir);
-
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    pmrem.compileEquirectangularShader();
-    const envTexture = pmrem.fromScene(new THREE.Scene(), 0, 0.1, 100);
-    this.scene.environment = envTexture.texture;
-    pmrem.dispose();
-
     this.arHemisphere = new THREE.HemisphereLight(0xffffff, 0x444466, 2.2);
     this.arHemisphere.position.set(0.5, 1, 0.25);
     this.arHemisphere.visible = false;
     this.scene.add(this.arHemisphere);
-  }
-
-  private initControls(): void {
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.08;
-    this.controls.minDistance = 0.5;
-    this.controls.maxDistance = 50;
   }
 
   private initReticle(): void {
@@ -402,26 +265,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.placedGroup.visible = true;
   }
 
-  private initDevClickLogger(): void {
-    this.renderer.domElement.addEventListener('click', (event: MouseEvent) => {
-      if (!this.model || this.renderer.xr.isPresenting || this.cameraSessionActive()) return;
-
-      const rect = this.renderer.domElement.getBoundingClientRect();
-      this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-      this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
-      this.raycaster.setFromCamera(this.mouse, this.camera);
-      const hits = this.raycaster.intersectObject(this.model, true);
-
-      if (hits.length > 0) {
-        const p = hits[0].point;
-        console.log(
-          `Annotation point: [${p.x.toFixed(4)}, ${p.y.toFixed(4)}, ${p.z.toFixed(4)}]`
-        );
-      }
-    });
-  }
-
   private resolveModelUrl(): string {
     try {
       return new URL('router.glb', document.baseURI).href;
@@ -447,11 +290,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         this.model.position.sub(center.multiplyScalar(scale));
 
         this.placedGroup.add(this.model);
-
-        this.camera.position.set(2.5, 2, 5);
-        this.controls.target.set(0, 0, 0);
-        this.controls.update();
-
         this.placeAnnotations();
       },
       undefined,
@@ -584,9 +422,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   private applyArPresentationStyle(): void {
     this.scene.background = null;
     this.renderer.setClearColor(0x000000, 0);
-    for (const o of this.orbitLights) {
-      o.visible = false;
-    }
     if (this.arHemisphere) {
       this.arHemisphere.visible = true;
     }
@@ -594,21 +429,13 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.reticle.visible = false;
   }
 
-  private applyOrbitPresentationStyle(): void {
+  private applyIdlePresentationStyle(): void {
     this.scene.background = new THREE.Color(0x1a1a2e);
     this.renderer.setClearColor(0x000000, 1);
-    for (const o of this.orbitLights) {
-      o.visible = true;
-    }
     if (this.arHemisphere) {
       this.arHemisphere.visible = false;
     }
-
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    pmrem.compileEquirectangularShader();
-    const envTexture = pmrem.fromScene(new THREE.Scene(), 0, 0.1, 100);
-    this.scene.environment = envTexture.texture;
-    pmrem.dispose();
+    this.scene.environment = null;
   }
 
   private onResize(): void {
@@ -621,9 +448,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
     this.css2DRenderer.setSize(w, h);
-    if (this.cameraSessionActive()) {
-      this.updateVideoBackdropScale();
-    }
   }
 
   private onAnimationFrame(_time: number, frame: XRFrame | null): void {
@@ -660,163 +484,9 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
           }
         }
       }
-    } else if (!this.cameraSessionActive()) {
-      this.controls.update();
     }
 
     this.renderer.render(this.scene, this.camera);
     this.css2DRenderer.render(this.scene, this.camera);
-  }
-
-  private stopCameraSession(): void {
-    if (!this.cameraSessionActive() && !this.mediaStream && !this.videoMesh) return;
-
-    this.teardownCameraPointerHandlers();
-    this.teardownVideoBackdrop();
-
-    if (this.placedGroup.parent === this.camera) {
-      this.camera.remove(this.placedGroup);
-      this.scene.add(this.placedGroup);
-    }
-    this.placedGroup.position.set(0, 0, 0);
-    this.placedGroup.quaternion.identity();
-    this.placedGroup.scale.set(1, 1, 1);
-
-    this.camera.position.copy(this.savedOrbitCameraPos);
-    this.camera.quaternion.copy(this.savedOrbitCameraQuat);
-    this.controls.target.copy(this.savedOrbitTarget);
-    this.controls.update();
-
-    this.controls.enabled = true;
-    this.renderer.domElement.style.touchAction = '';
-    this.applyOrbitPresentationStyle();
-
-    this.mediaStream?.getTracks().forEach((t) => t.stop());
-    this.mediaStream = null;
-
-    this.cameraSessionActive.set(false);
-    this.zone.run(() => this.cdr.markForCheck());
-  }
-
-  private teardownVideoBackdrop(): void {
-    if (this.videoMesh) {
-      this.camera.remove(this.videoMesh);
-      this.videoMesh.geometry.dispose();
-      const mat = this.videoMesh.material as THREE.MeshBasicMaterial;
-      mat.map?.dispose();
-      mat.dispose();
-      this.videoMesh = null;
-    }
-    this.videoTexture = null;
-    if (this.videoEl) {
-      this.videoEl.pause();
-      this.videoEl.srcObject = null;
-      this.videoEl = null;
-    }
-  }
-
-  private updateVideoBackdropScale(): void {
-    if (!this.videoMesh || !this.videoEl) return;
-    const v = this.videoEl;
-    if (v.videoWidth === 0 || v.videoHeight === 0) return;
-
-    const dist = 14;
-    const videoAspect = v.videoWidth / v.videoHeight;
-    const viewAspect = this.camera.aspect;
-    const vFovRad = THREE.MathUtils.degToRad(this.camera.fov);
-    const viewH = 2 * Math.tan(vFovRad / 2) * dist;
-    const viewW = viewH * viewAspect;
-
-    let planeW = viewH * videoAspect;
-    let planeH = viewH;
-    if (planeW < viewW) {
-      planeW = viewW;
-      planeH = planeW / videoAspect;
-    }
-
-    this.videoMesh.scale.set(planeW, planeH, 1);
-    this.videoMesh.position.set(0, 0, -dist);
-  }
-
-  private setupCameraPointerHandlers(): void {
-    const el = this.renderer.domElement;
-    const opts = { passive: false };
-    el.addEventListener('pointerdown', this.onCamPointerDown, opts);
-    el.addEventListener('pointermove', this.onCamPointerMove, opts);
-    el.addEventListener('pointerup', this.onCamPointerUp, opts);
-    el.addEventListener('pointercancel', this.onCamPointerUp, opts);
-  }
-
-  private teardownCameraPointerHandlers(): void {
-    const el = this.renderer.domElement;
-    el.removeEventListener('pointerdown', this.onCamPointerDown);
-    el.removeEventListener('pointermove', this.onCamPointerMove);
-    el.removeEventListener('pointerup', this.onCamPointerUp);
-    el.removeEventListener('pointercancel', this.onCamPointerUp);
-    this.camPointers.clear();
-    this.pinchRef = null;
-  }
-
-  private readonly onCamPointerDown = (e: PointerEvent): void => {
-    if (!this.cameraSessionActive()) return;
-    e.preventDefault();
-    this.camPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (this.camPointers.size === 2) {
-      this.pinchRef = {
-        dist: this.getPinchDistance(),
-        scale: this.placedGroup.scale.x,
-      };
-    }
-  };
-
-  private readonly onCamPointerMove = (e: PointerEvent): void => {
-    if (!this.cameraSessionActive() || !this.camPointers.has(e.pointerId)) return;
-    e.preventDefault();
-
-    const prev = this.camPointers.get(e.pointerId)!;
-    this.camPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (this.camPointers.size === 2) {
-      if (!this.pinchRef) {
-        this.pinchRef = {
-          dist: this.getPinchDistance(),
-          scale: this.placedGroup.scale.x,
-        };
-      }
-      const d = this.getPinchDistance();
-      if (d > 1 && this.pinchRef) {
-        const s = THREE.MathUtils.clamp(
-          this.pinchRef.scale * (d / this.pinchRef.dist),
-          0.35,
-          3.5
-        );
-        this.placedGroup.scale.setScalar(s);
-      }
-      return;
-    }
-
-    if (this.camPointers.size === 1) {
-      const dx = e.clientX - prev.x;
-      const dy = e.clientY - prev.y;
-      this.placedGroup.position.x -= dx * this.camDragSens;
-      this.placedGroup.position.y += dy * this.camDragSens;
-    }
-  };
-
-  private readonly onCamPointerUp = (e: PointerEvent): void => {
-    if (!this.camPointers.has(e.pointerId)) return;
-    e.preventDefault();
-    this.camPointers.delete(e.pointerId);
-    if (this.camPointers.size < 2) {
-      this.pinchRef = null;
-    }
-  };
-
-  private getPinchDistance(): number {
-    const pts = [...this.camPointers.values()];
-    if (pts.length < 2) return 0;
-    const dx = pts[0].x - pts[1].x;
-    const dy = pts[0].y - pts[1].y;
-    return Math.hypot(dx, dy);
   }
 }

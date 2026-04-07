@@ -1,55 +1,35 @@
 <div class="viewer-root">
   <div #domOverlayRoot class="xr-dom-overlay">
     <header class="toolbar">
-      <button
-        type="button"
-        class="mode-btn"
-        [class.active]="!immersiveActive()"
-        [disabled]="immersiveActive()"
-        (click)="focus3DView()"
-      >
-        3D view
-      </button>
-      <button
-        type="button"
-        class="mode-btn"
-        [class.active]="cameraSessionActive()"
-        [disabled]="immersiveActive()"
-        (click)="startCameraSession()"
-      >
-        Over camera
-      </button>
-      <button
-        type="button"
-        class="mode-btn"
-        [class.active]="arSessionActive()"
-        [disabled]="!arSupported() || immersiveActive()"
-        (click)="startArSession()"
-      >
-        Room AR
-      </button>
-      @if (immersiveActive()) {
-        <button type="button" class="mode-btn exit" (click)="exitImmersive()">
-          Exit
+      @if (!arSessionActive()) {
+        <button
+          type="button"
+          class="mode-btn primary"
+          [disabled]="!arChecked() || !arSupported()"
+          (click)="startArSession()"
+        >
+          Start room AR
+        </button>
+      }
+      @if (arSessionActive()) {
+        <button type="button" class="mode-btn exit" (click)="endArSession()">
+          Exit AR
         </button>
       }
     </header>
+    @if (!arChecked()) {
+      <p class="ar-status">Checking AR support…</p>
+    }
     @if (arChecked() && !arSupported()) {
       <p class="ar-fallback">
-        WebXR room AR is not available in this WebView. Use
-        <strong>Over camera</strong> to see the router on the live camera with
-        labels—no native app update required (only camera permission for this
-        page).
+        WebXR <strong>immersive-ar</strong> is not available in this browser or WebView.
+        Room AR cannot run here. Use a device and shell that expose WebXR AR (HTTPS
+        required).
       </p>
     }
     @if (arSessionActive()) {
       <p class="ar-hint">
         Point at a floor or table. Tap to place the router; tap again to move it.
-      </p>
-    }
-    @if (cameraSessionActive()) {
-      <p class="ar-hint">
-        Drag to move the router on screen. Pinch with two fingers to resize.
       </p>
     }
   </div>

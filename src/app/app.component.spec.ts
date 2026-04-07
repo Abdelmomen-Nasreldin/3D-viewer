@@ -19,7 +19,6 @@ describe('AppComponent', () => {
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
     expect(compiled.querySelector('app-viewer')).toBeTruthy();
-    expect(compiled.textContent).toContain('3D view');
-    expect(compiled.textContent).toContain('Over camera');
+    expect(compiled.textContent).toContain('Start room AR');
   });
 });
