@@ -23,11 +23,6 @@ interface TransientHitTestBatch {
   readonly results: ReadonlyArray<XRHitTestResult>;
 }
 
-/** When the `anchors` feature is granted, hit results can create world-locked anchors. */
-type HitResultWithAnchor = XRHitTestResult & {
-  createAnchor?: () => Promise<XRAnchor>;
-};
-
 /**
  * Hotspot labels: `css2d` (default) or `sprite` if CSS2D misbehaves in a WebView.
  */
@@ -52,7 +47,7 @@ const ROUTER_ANNOTATIONS: Annotation[] = [
   { id: 'eth-4', position: [0.8, 0.1, -0.75], text: 'LAN Port 4 (Gigabit Ethernet)' },
   { id: 'phone-port', position: [1.05, 0.1, -0.75], text: 'Phone Port (RJ11) — Analogue handset' },
   { id: 'usb-port', position: [1.3, 0.15, -0.75], text: 'USB Port — Storage / printer sharing' },
-  { id: 'wps-button', position: [1.4, 0.25, 0], text: 'WPS Button — Press to pair devices' },
+  { id: 'wps-button', position: [1.4, 0.25, 0], text: 'WPS Button — Quick pairing button' },
   { id: 'reset-button', position: [-1.4, 0.1, -0.2], text: 'Reset Pinhole — Hold 10s to factory reset' },
   { id: 'ventilation', position: [0, 0.5, 0], text: 'Ventilation — Keep clear for airflow' },
 ];
@@ -99,16 +94,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   private transientHitTestSource: XRTransientInputHitTestSource | null = null;
   private sessionSelectHandler: ((e: Event) => void) | null = null;
   private xrSessionRef: XRSession | null = null;
-  /** Latest continuous viewer hit; used with reticle for `createAnchor` on tap. */
+  /** Latest continuous viewer hit used for reticle-based placement on tap. */
   private lastViewerHitResult: XRHitTestResult | null = null;
-  /**
-   * When non-null and poses are stable, `updatePlacedGroupFromAnchor` runs each frame for world-locked placement.
-   * Requires session `anchors` feature and successful `createAnchor` on the placement hit.
-   */
-  private placementAnchor: XRAnchor | null = null;
-  /** Consecutive frames with null anchor pose; beyond threshold we drop anchor and keep last matrix pose. */
-  private anchorPoseNullStreak = 0;
-  private static readonly ANCHOR_POSE_NULL_MAX_STREAK = 120;
   private readonly tmpMatrix = new THREE.Matrix4();
   private readonly tmpScale = new THREE.Vector3();
 
@@ -157,7 +144,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         label: 'floor_dom_overlay',
         init: {
           requiredFeatures: ['hit-test', 'local-floor'],
-          optionalFeatures: ['dom-overlay', 'local', 'anchors'],
+          optionalFeatures: ['dom-overlay', 'local'],
           domOverlay: { root: overlayRoot },
         },
       },
@@ -165,14 +152,14 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         label: 'floor_minimal',
         init: {
           requiredFeatures: ['hit-test', 'local-floor'],
-          optionalFeatures: ['local', 'anchors'],
+          optionalFeatures: ['local'],
         },
       },
       {
         label: 'legacy_dom_overlay',
         init: {
           requiredFeatures: ['hit-test'],
-          optionalFeatures: ['dom-overlay', 'local', 'local-floor', 'anchors'],
+          optionalFeatures: ['dom-overlay', 'local', 'local-floor'],
           domOverlay: { root: overlayRoot },
         },
       },
@@ -180,7 +167,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         label: 'legacy_minimal',
         init: {
           requiredFeatures: ['hit-test'],
-          optionalFeatures: ['local', 'local-floor', 'anchors'],
+          optionalFeatures: ['local', 'local-floor'],
         },
       },
     ];
@@ -223,7 +210,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     if (session) {
       session.end();
     }
-    this.clearPlacementAnchor();
     this.resizeObserver?.disconnect();
     this.clearSpriteLabels();
     this.renderer?.dispose();
@@ -245,7 +231,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.renderer.xr.setReferenceSpaceType(floorGranted ? 'local-floor' : 'local');
       // #region agent log
       this.dbgLog('B', 'viewer.component.ts:startArSession', 'placement mode', {
-        anchorsFeature: session.enabledFeatures?.includes('anchors') ?? false,
         refSpace: floorGranted ? 'local-floor' : 'local',
       });
       // #endregion
@@ -291,7 +276,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.transientHitTestSource = null;
     }
 
-    this.clearPlacementAnchor();
     this.lastViewerHitResult = null;
 
     this.applyIdlePresentationStyle();
@@ -418,57 +402,17 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     console.debug('Room AR: could not create transient hit-test source for profiles', profiles);
   }
 
-  private clearPlacementAnchor(): void {
-    if (this.placementAnchor) {
-      this.placementAnchor.delete();
-      this.placementAnchor = null;
-    }
-    this.anchorPoseNullStreak = 0;
-  }
-
-  private async tryBindAnchorFromHit(hit: HitResultWithAnchor): Promise<void> {
-    const session = this.xrSessionRef;
-    if (!session?.enabledFeatures?.includes('anchors')) return;
-    const create = hit.createAnchor;
-    // #region agent log
-    this.dbgLog('D', 'viewer.component.ts:tryBindAnchor', 'createAnchor probe', {
-      hasCreateAnchor: typeof create === 'function',
-    });
-    // #endregion
-    if (typeof create !== 'function') return;
-    try {
-      const anchor = await create.call(hit);
-      if (anchor) {
-        this.clearPlacementAnchor();
-        this.placementAnchor = anchor;
-        this.anchorPoseNullStreak = 0;
-      }
-      // #region agent log
-      this.dbgLog('D', 'viewer.component.ts:tryBindAnchor', 'createAnchor result', {
-        gotAnchor: !!anchor,
-      });
-      // #endregion
-    } catch {
-      console.debug('Room AR: createAnchor failed or unsupported');
-      // #region agent log
-      this.dbgLog('D', 'viewer.component.ts:tryBindAnchor', 'createAnchor threw', {});
-      // #endregion
-    }
-  }
-
   private async onArSelect(ev?: Event): Promise<void> {
     const referenceSpace = this.renderer.xr.getReferenceSpace();
     if (!referenceSpace) return;
 
     if (this.reticle.visible) {
       if (this.lastViewerHitResult) {
-        const hit = this.lastViewerHitResult as HitResultWithAnchor;
+        const hit = this.lastViewerHitResult;
         const pose = hit.getPose(referenceSpace);
         if (pose) {
           this.tmpMatrix.fromArray(pose.transform.matrix);
           this.applyPlacedGroupFromMatrix(this.tmpMatrix);
-          this.clearPlacementAnchor();
-          await this.tryBindAnchorFromHit(hit);
         }
         // #region agent log
         this.dbgLog('C', 'viewer.component.ts:onArSelect', 'placement path', {
@@ -496,8 +440,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         if (pose) {
           this.tmpMatrix.fromArray(pose.transform.matrix);
           this.applyPlacedGroupFromMatrix(this.tmpMatrix);
-          this.clearPlacementAnchor();
-          await this.tryBindAnchorFromHit(hit as HitResultWithAnchor);
           this.placedGroup.visible = true;
         }
         // #region agent log
@@ -512,7 +454,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     }
 
     if (!this.placedGroup.visible) {
-      this.clearPlacementAnchor();
       this.applyFallbackPlacement();
       // #region agent log
       this.dbgLog('C', 'viewer.component.ts:onArSelect', 'placement path', {
@@ -552,47 +493,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.tmpScale
     );
     this.placedGroup.scale.set(1, 1, 1);
-  }
-
-  private updatePlacedGroupFromAnchor(frame: XRFrame): void {
-    if (!this.placementAnchor) return;
-    const referenceSpace = this.renderer.xr.getReferenceSpace();
-    if (!referenceSpace) return;
-    const pose = frame.getPose(
-      this.placementAnchor as unknown as XRSpace,
-      referenceSpace
-    );
-    if (!pose) {
-      this.anchorPoseNullStreak += 1;
-      if (this.anchorPoseNullStreak >= ViewerComponent.ANCHOR_POSE_NULL_MAX_STREAK) {
-        console.warn(
-          'Room AR: anchor pose unstable; falling back to last placed transform'
-        );
-        this.clearPlacementAnchor();
-        this.anchorPoseNullStreak = 0;
-      }
-      // #region agent log
-      if (this.debugArFrame % 45 === 0) {
-        this.dbgLog('E', 'viewer.component.ts:updatePlacedGroupFromAnchor', 'anchor pose null', {
-          streak: this.anchorPoseNullStreak,
-        });
-      }
-      // #endregion
-      return;
-    }
-    this.anchorPoseNullStreak = 0;
-    this.tmpMatrix.fromArray(pose.transform.matrix);
-    this.applyPlacedGroupFromMatrix(this.tmpMatrix);
-    // #region agent log
-    if (this.debugArFrame % 45 === 0) {
-      const p = this.placedGroup.position;
-      this.dbgLog('E', 'viewer.component.ts:updatePlacedGroupFromAnchor', 'anchor tick', {
-        x: Math.round(p.x * 1000) / 1000,
-        y: Math.round(p.y * 1000) / 1000,
-        z: Math.round(p.z * 1000) / 1000,
-      });
-    }
-    // #endregion
   }
 
   /** Last resort in local space when continuous reticle and transient hits both miss (first placement only). */
@@ -879,7 +779,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
               poseOk: dbgHitPoseOk,
               viewerPoseOk: !!viewerPose,
               placedVisible: this.placedGroup.visible,
-              hasAnchor: !!this.placementAnchor,
               pgX: Math.round(p.x * 1000) / 1000,
               pgY: Math.round(p.y * 1000) / 1000,
               pgZ: Math.round(p.z * 1000) / 1000,
@@ -893,13 +792,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
             reticleVisible: this.reticle.visible,
             hitSourceReady: false,
             placedVisible: this.placedGroup.visible,
-            hasAnchor: !!this.placementAnchor,
           });
           // #endregion
-        }
-
-        if (this.placedGroup.visible && this.placementAnchor) {
-          this.updatePlacedGroupFromAnchor(frame);
         }
       }
     }

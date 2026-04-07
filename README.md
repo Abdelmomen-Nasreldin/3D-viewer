@@ -12,12 +12,12 @@ All hit poses are expressed in the session **reference space** (`local-floor` wh
 
 The **cyan ring** needs a working continuous hit-test source and a real surface in view; on some **Android WebViews** the source can fail on the first attempt—the app **retries on a short cadence** so the ring can appear after a brief warm-up. Aim at the floor or a table.
 
-**World lock:** when the session grants the **`anchors`** feature and `createAnchor` succeeds on your placement hit, the router pose is updated each frame with **`XRFrame.getPose(anchor, referenceSpace)`**. If the anchor never resolves or poses stay null for too long, tracking **falls back** to the last stable transform for that placement. The session prefers **`local-floor`** reference space for more stable vertical alignment.
+To reduce extra WebView permission prompts, AR uses **hit-test only** (no anchor feature request). The session still prefers **`local-floor`** reference space for more stable vertical alignment.
 
 ### Manual AR checks (device / WebView)
 
 1. Start room AR and point at a real surface; confirm the **cyan ring** appears (may take a second on slow WebViews).
-2. Tap to place; **walk around** the router—the model should stay fixed in the room (strongest when **anchors** is granted).
+2. Tap to place; **walk around** the router—the model should remain in world space from the placed hit pose.
 3. If the ring never appears, try **tap placement** (transient hit-test); first tap may use the **fallback** position in front of you.
 4. End AR and start again; confirm placement and reticle work on a **second** session.
 
