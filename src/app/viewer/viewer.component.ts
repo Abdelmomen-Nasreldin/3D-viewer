@@ -118,7 +118,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     location: string,
     message: string,
     data: Record<string, unknown>,
-    runId = 'pre-fix'
+    runId = 'post-fix'
   ): void {
     fetch('http://127.0.0.1:7913/ingest/77e9c71a-58dc-48e1-991b-949e089be7ff', {
       method: 'POST',
@@ -136,8 +136,64 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         timestamp: Date.now(),
       }),
     }).catch(() => {});
+    console.debug('[ARDBG]', { hypothesisId, location, message, data, runId, t: Date.now() });
   }
   // #endregion
+
+  /** Prefer `local-floor` in required features so hit poses match Three’s floor reference space (immersive-web hit-test pattern). */
+  private async requestImmersiveArSession(overlayRoot: HTMLElement): Promise<XRSession | null> {
+    if (!navigator.xr) return null;
+    const attempts: { label: string; init: XRSessionInit }[] = [
+      {
+        label: 'floor_dom_overlay',
+        init: {
+          requiredFeatures: ['hit-test', 'local-floor'],
+          optionalFeatures: ['dom-overlay', 'local', 'anchors'],
+          domOverlay: { root: overlayRoot },
+        },
+      },
+      {
+        label: 'floor_minimal',
+        init: {
+          requiredFeatures: ['hit-test', 'local-floor'],
+          optionalFeatures: ['local', 'anchors'],
+        },
+      },
+      {
+        label: 'legacy_dom_overlay',
+        init: {
+          requiredFeatures: ['hit-test'],
+          optionalFeatures: ['dom-overlay', 'local', 'local-floor', 'anchors'],
+          domOverlay: { root: overlayRoot },
+        },
+      },
+      {
+        label: 'legacy_minimal',
+        init: {
+          requiredFeatures: ['hit-test'],
+          optionalFeatures: ['local', 'local-floor', 'anchors'],
+        },
+      },
+    ];
+    for (const { label, init } of attempts) {
+      try {
+        const session = await navigator.xr.requestSession('immersive-ar', init);
+        // #region agent log
+        this.dbgLog('A', 'viewer.component.ts:requestImmersiveArSession', 'session acquired', {
+          label,
+          enabledFeatures: [...(session.enabledFeatures ?? [])],
+        });
+        // #endregion
+        return session;
+      } catch {
+        continue;
+      }
+    }
+    // #region agent log
+    this.dbgLog('A', 'viewer.component.ts:requestImmersiveArSession', 'all session attempts failed', {});
+    // #endregion
+    return null;
+  }
 
   ngAfterViewInit(): void {
     this.initScene();
@@ -169,24 +225,15 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     if (!navigator.xr || !this.arSupported() || !this.modelLoaded()) return;
 
     const overlayRoot = this.domOverlayRef.nativeElement;
-    const withOverlay: XRSessionInit = {
-      requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay', 'local', 'local-floor', 'anchors'],
-      domOverlay: { root: overlayRoot },
-    };
-    const minimal: XRSessionInit = {
-      requiredFeatures: ['hit-test'],
-      optionalFeatures: ['local', 'local-floor', 'anchors'],
-    };
 
     try {
-      let session: XRSession;
-      try {
-        session = await navigator.xr.requestSession('immersive-ar', withOverlay);
-      } catch {
-        session = await navigator.xr.requestSession('immersive-ar', minimal);
+      const session = await this.requestImmersiveArSession(overlayRoot);
+      if (!session) {
+        console.warn('WebXR AR: could not start session with any feature set');
+        return;
       }
-      this.renderer.xr.setReferenceSpaceType('local-floor');
+      const floorGranted = session.enabledFeatures?.includes('local-floor') ?? false;
+      this.renderer.xr.setReferenceSpaceType(floorGranted ? 'local-floor' : 'local');
       await this.renderer.xr.setSession(session);
 
       this.xrSessionRef = session;
@@ -724,9 +771,13 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
             .then((viewerSpace) => {
               const requestHitTestSource = session.requestHitTestSource;
               if (typeof requestHitTestSource !== 'function') return;
-              const hitPromise = requestHitTestSource({ space: viewerSpace });
+              const withPlanes = {
+                space: viewerSpace,
+                entityTypes: ['plane' as const],
+              } as NonNullable<Parameters<NonNullable<XRSession['requestHitTestSource']>>[0]>;
+              const hitPromise = requestHitTestSource(withPlanes);
               if (!hitPromise) return;
-              return hitPromise;
+              return hitPromise.catch(() => requestHitTestSource({ space: viewerSpace }));
             })
             .then((source) => {
               if (source) this.hitTestSource = source;
@@ -747,26 +798,41 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         }
 
         if (this.hitTestSource) {
-          const results = frame.getHitTestResults(this.hitTestSource);
-          if (results.length > 0) {
-            const pose = results[0].getPose(referenceSpace);
-            if (pose) {
-              this.lastViewerHitResult = results[0];
-              this.reticle.visible = true;
-              this.tmpMatrix.fromArray(pose.transform.matrix);
-              this.reticle.matrix.copy(this.tmpMatrix);
-            }
-          } else {
+          let dbgHitLen = -2;
+          let dbgHitPoseOk = false;
+          const viewerPose = frame.getViewerPose(referenceSpace);
+          if (!viewerPose) {
             this.lastViewerHitResult = null;
             this.reticle.visible = false;
+            dbgHitLen = -3;
+          } else {
+            const results = frame.getHitTestResults(this.hitTestSource);
+            dbgHitLen = results.length;
+            if (results.length > 0) {
+              const pose = results[0].getPose(referenceSpace);
+              dbgHitPoseOk = !!pose;
+              if (pose) {
+                this.lastViewerHitResult = results[0];
+                this.reticle.visible = true;
+                this.tmpMatrix.fromArray(pose.transform.matrix);
+                this.reticle.matrix.copy(this.tmpMatrix);
+              } else {
+                this.lastViewerHitResult = null;
+                this.reticle.visible = false;
+              }
+            } else {
+              this.lastViewerHitResult = null;
+              this.reticle.visible = false;
+            }
           }
           // #region agent log
           if (this.debugArFrame % 30 === 0) {
             const p = this.placedGroup.position;
             this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'xr frame sample', {
-              resultsLen: results.length,
+              resultsLen: dbgHitLen,
               reticleVisible: this.reticle.visible,
-              poseOk: results.length > 0 ? !!results[0].getPose(referenceSpace) : false,
+              poseOk: dbgHitPoseOk,
+              viewerPoseOk: !!viewerPose,
               placedVisible: this.placedGroup.visible,
               hasAnchor: !!this.placementAnchor,
               pgX: Math.round(p.x * 1000) / 1000,
