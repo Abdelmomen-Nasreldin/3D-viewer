@@ -61,7 +61,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   private markerRoot: THREE.Group | null = null;
 
   private hitTestSource: XRHitTestSource | null = null;
-  private hitTestSourceRequested = false;
   private transientHitTestSource: XRTransientInputHitTestSource | null = null;
   private sessionSelectHandler: ((e: Event) => void) | null = null;
   private xrSessionRef: XRSession | null = null;
@@ -69,6 +68,10 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   private lastViewerHitResult: XRHitTestResult | null = null;
   /** Drives `placedGroup` pose every frame so the model stays fixed in the real world. */
   private placementAnchor: XRAnchor | null = null;
+  /** If hit-based `createAnchor` is deferred, retry `XRFrame.createAnchor` with this pose for a few frames. */
+  private pendingRigidForAnchor: XRRigidTransform | null = null;
+  private anchorFrameRetriesLeft = 0;
+  private pendingAnchorRequestInFlight = false;
   private readonly tmpMatrix = new THREE.Matrix4();
   private readonly tmpScale = new THREE.Vector3();
 
@@ -80,6 +83,11 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
   private readonly zone = inject(NgZone);
   private readonly cdr = inject(ChangeDetectorRef);
+
+  /** Hit-test must be created after Three.js finishes XR setup (`sessionstart`), not from the first animation frame. */
+  private readonly onXrSessionStartBound = () => {
+    void this.bootstrapRoomArHitTest();
+  };
 
   ngAfterViewInit(): void {
     this.initScene();
@@ -103,6 +111,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.stopMarkerArSession();
     this.clearPlacementAnchor();
     this.resizeObserver?.disconnect();
+    this.renderer?.xr.removeEventListener('sessionstart', this.onXrSessionStartBound);
     this.renderer?.dispose();
   }
 
@@ -222,22 +231,48 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.stopMarkerArSession();
 
     const overlayRoot = this.domOverlayRef.nativeElement;
-    const withOverlay: XRSessionInit = {
-      requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay', 'local', 'local-floor', 'anchors'],
+    const xrOptionals = [
+      'dom-overlay',
+      'local',
+      'local-floor',
+      'anchors',
+      'plane-detection',
+      'mesh-detection',
+      'depth-sensing',
+    ] as const;
+    const withOverlayAnchors: XRSessionInit = {
+      requiredFeatures: ['hit-test', 'anchors'],
+      optionalFeatures: [...xrOptionals],
       domOverlay: { root: overlayRoot },
     };
-    const minimal: XRSessionInit = {
+    const withOverlayHitOnly: XRSessionInit = {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['local', 'local-floor', 'anchors'],
+      optionalFeatures: [...xrOptionals],
+      domOverlay: { root: overlayRoot },
+    };
+    const minimalAnchors: XRSessionInit = {
+      requiredFeatures: ['hit-test', 'anchors'],
+      optionalFeatures: [...xrOptionals],
+    };
+    const minimalHitOnly: XRSessionInit = {
+      requiredFeatures: ['hit-test'],
+      optionalFeatures: [...xrOptionals],
     };
 
     try {
       let session: XRSession;
       try {
-        session = await navigator.xr.requestSession('immersive-ar', withOverlay);
+        session = await navigator.xr.requestSession('immersive-ar', withOverlayAnchors);
       } catch {
-        session = await navigator.xr.requestSession('immersive-ar', minimal);
+        try {
+          session = await navigator.xr.requestSession('immersive-ar', withOverlayHitOnly);
+        } catch {
+          try {
+            session = await navigator.xr.requestSession('immersive-ar', minimalAnchors);
+          } catch {
+            session = await navigator.xr.requestSession('immersive-ar', minimalHitOnly);
+          }
+        }
       }
       this.renderer.xr.setReferenceSpaceType('local-floor');
       await this.renderer.xr.setSession(session);
@@ -248,8 +283,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         void this.onArSelect(e);
       };
       session.addEventListener('select', this.sessionSelectHandler);
-
-      void this.requestTransientHitTestSource(session);
 
       this.applyArPresentationStyle();
       this.ensurePlacedGroupOnSceneForWebXr();
@@ -272,7 +305,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     }
     this.xrSessionRef = null;
 
-    this.hitTestSourceRequested = false;
     if (this.hitTestSource) {
       this.hitTestSource.cancel();
       this.hitTestSource = null;
@@ -283,6 +315,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     }
 
     this.clearPlacementAnchor();
+    this.clearPendingWorldAnchor();
     this.lastViewerHitResult = null;
 
     this.applyIdlePresentationStyle();
@@ -345,6 +378,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
     this.resizeObserver = new ResizeObserver(() => this.onResize());
     this.resizeObserver.observe(container);
+
+    this.renderer.xr.addEventListener('sessionstart', this.onXrSessionStartBound);
   }
 
   private initLights(): void {
@@ -448,8 +483,57 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.reticle = new THREE.Mesh(geom, mat);
     this.reticle.matrixAutoUpdate = false;
     this.reticle.renderOrder = 10000;
+    this.reticle.frustumCulled = false;
     this.reticle.visible = false;
     this.scene.add(this.reticle);
+  }
+
+  /**
+   * Runs on Three.js `sessionstart` when `local-floor` (and WebGL XR layer) are ready.
+   * Creating the hit-test source earlier often fails silently, so the reticle never appears.
+   */
+  private async bootstrapRoomArHitTest(): Promise<void> {
+    const session = this.renderer.xr.getSession();
+    if (!session) return;
+
+    if (this.hitTestSource) {
+      try {
+        this.hitTestSource.cancel();
+      } catch {
+        /* ignore */
+      }
+      this.hitTestSource = null;
+    }
+
+    try {
+      const viewerSpace = await session.requestReferenceSpace('viewer');
+      const requestSource = session.requestHitTestSource;
+      if (typeof requestSource !== 'function') {
+        console.warn('Room AR: requestHitTestSource is not supported');
+        await this.requestTransientHitTestSource(session);
+        return;
+      }
+
+      try {
+        const src = await requestSource.call(session, { space: viewerSpace });
+        this.hitTestSource = src ?? null;
+      } catch (err) {
+        console.warn('Room AR: default hit-test source failed, retrying with plane/mesh', err);
+        try {
+          const src2 = await requestSource.call(session, {
+            space: viewerSpace,
+            entityTypes: ['plane', 'mesh'],
+          } as XRHitTestOptionsInit);
+          this.hitTestSource = src2 ?? null;
+        } catch (err2) {
+          console.warn('Room AR: plane/mesh hit-test source also failed', err2);
+        }
+      }
+    } catch (err) {
+      console.warn('Room AR: requestReferenceSpace(viewer) or hit-test setup failed', err);
+    }
+
+    await this.requestTransientHitTestSource(session);
   }
 
   private initXrControllers(): void {
@@ -491,23 +575,122 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  private async tryBindAnchorFromHit(hit: HitResultWithAnchor): Promise<void> {
-    const create = hit.createAnchor;
-    if (typeof create !== 'function') return;
+  private clearPendingWorldAnchor(): void {
+    this.pendingRigidForAnchor = null;
+    this.anchorFrameRetriesLeft = 0;
+    this.pendingAnchorRequestInFlight = false;
+  }
+
+  private savePendingRigidFromHit(hit: XRHitTestResult, refSpace: XRReferenceSpace): void {
+    if (typeof XRRigidTransform === 'undefined') return;
+    const pose = hit.getPose(refSpace);
+    if (!pose) return;
     try {
-      const anchor = await create.call(hit);
-      if (anchor) {
-        this.clearPlacementAnchor();
-        this.placementAnchor = anchor;
-      }
+      this.pendingRigidForAnchor = new XRRigidTransform(
+        pose.transform.position,
+        pose.transform.orientation
+      );
+      this.anchorFrameRetriesLeft = 72;
     } catch {
-      console.debug('Room AR: createAnchor failed or unsupported');
+      this.pendingRigidForAnchor = null;
     }
   }
 
-  private async onArSelect(ev?: Event): Promise<void> {
+  /**
+   * World lock: start anchor creation immediately (no `await` before this) so we stay inside the XR input frame.
+   * Falls back to `XRFrame.createAnchor` when the hit path fails.
+   */
+  private bindWorldAnchorFromHit(
+    hit: HitResultWithAnchor,
+    frame: XRFrame | null,
+    refSpace: XRReferenceSpace
+  ): void {
+    const createOnHit = hit.createAnchor;
+    if (typeof createOnHit === 'function') {
+      void createOnHit
+        .call(hit)
+        .then((anchor: XRAnchor | undefined) => {
+          if (anchor) {
+            this.clearPlacementAnchor();
+            this.placementAnchor = anchor;
+            this.clearPendingWorldAnchor();
+          }
+        })
+        .catch(() => {
+          this.tryCreateAnchorOnFrame(hit, frame, refSpace);
+        });
+      return;
+    }
+    this.tryCreateAnchorOnFrame(hit, frame, refSpace);
+  }
+
+  private tryCreateAnchorOnFrame(
+    hit: XRHitTestResult,
+    frame: XRFrame | null,
+    refSpace: XRReferenceSpace
+  ): void {
+    if (!frame) return;
+    const pose = hit.getPose(refSpace);
+    if (!pose || typeof XRRigidTransform === 'undefined') return;
+    const ext = frame as XRFrame & {
+      createAnchor?: (t: XRRigidTransform, space: XRSpace) => Promise<XRAnchor>;
+    };
+    if (typeof ext.createAnchor !== 'function') return;
+    try {
+      const t = new XRRigidTransform(pose.transform.position, pose.transform.orientation);
+      void ext
+        .createAnchor(t, refSpace)
+        .then((anchor: XRAnchor | undefined) => {
+          if (anchor) {
+            this.clearPlacementAnchor();
+            this.placementAnchor = anchor;
+            this.clearPendingWorldAnchor();
+          }
+        })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Retries `frame.createAnchor` from the last placement pose when the first attempt was too early. */
+  private retryPendingAnchorOnFrame(frame: XRFrame, refSpace: XRReferenceSpace): void {
+    const t = this.pendingRigidForAnchor;
+    if (
+      !t ||
+      this.placementAnchor ||
+      this.anchorFrameRetriesLeft <= 0 ||
+      this.pendingAnchorRequestInFlight
+    ) {
+      return;
+    }
+    const ext = frame as XRFrame & {
+      createAnchor?: (tr: XRRigidTransform, space: XRSpace) => Promise<XRAnchor>;
+    };
+    if (typeof ext.createAnchor !== 'function') return;
+    this.anchorFrameRetriesLeft--;
+    this.pendingAnchorRequestInFlight = true;
+    void ext
+      .createAnchor(t, refSpace)
+      .then((anchor: XRAnchor | undefined) => {
+        if (anchor) {
+          this.clearPlacementAnchor();
+          this.placementAnchor = anchor;
+          this.clearPendingWorldAnchor();
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.pendingAnchorRequestInFlight = false;
+      });
+  }
+
+  private onArSelect(ev?: Event): void {
     const referenceSpace = this.renderer.xr.getReferenceSpace();
     if (!referenceSpace) return;
+
+    const xrInput = ev as XRInputSourceEvent | undefined;
+    const inputFrame = xrInput?.frame ?? null;
 
     if (this.reticle.visible) {
       if (this.lastViewerHitResult) {
@@ -516,7 +699,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         if (pose) {
           this.tmpMatrix.fromArray(pose.transform.matrix);
           this.applyPlacedGroupFromMatrix(this.tmpMatrix);
-          await this.tryBindAnchorFromHit(hit);
+          this.savePendingRigidFromHit(hit, referenceSpace);
+          this.bindWorldAnchorFromHit(hit, inputFrame, referenceSpace);
         }
       } else {
         this.applyPlacedGroupFromMatrix(this.reticle.matrix);
@@ -525,15 +709,15 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    const xrEvent = ev as XRInputSourceEvent | undefined;
-    if (this.transientHitTestSource && xrEvent?.frame) {
-      const hit = this.firstTransientHitResult(xrEvent.frame, xrEvent);
+    if (this.transientHitTestSource && xrInput?.frame) {
+      const hit = this.firstTransientHitResult(xrInput.frame, xrInput);
       if (hit) {
         const pose = hit.getPose(referenceSpace);
         if (pose) {
           this.tmpMatrix.fromArray(pose.transform.matrix);
           this.applyPlacedGroupFromMatrix(this.tmpMatrix);
-          await this.tryBindAnchorFromHit(hit as HitResultWithAnchor);
+          this.savePendingRigidFromHit(hit, referenceSpace);
+          this.bindWorldAnchorFromHit(hit as HitResultWithAnchor, xrInput.frame, referenceSpace);
           this.placedGroup.visible = true;
         }
         return;
@@ -543,6 +727,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
     if (!this.placedGroup.visible) {
       this.clearPlacementAnchor();
+      this.clearPendingWorldAnchor();
       this.applyFallbackPlacement();
     }
   }
@@ -680,19 +865,6 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       const referenceSpace = this.renderer.xr.getReferenceSpace();
       const session = this.renderer.xr.getSession();
       if (referenceSpace && session) {
-        if (!this.hitTestSourceRequested) {
-          session.requestReferenceSpace('viewer').then((viewerSpace) => {
-            const requestHitTestSource = session.requestHitTestSource;
-            if (typeof requestHitTestSource !== 'function') return;
-            const hitPromise = requestHitTestSource({ space: viewerSpace });
-            if (!hitPromise) return;
-            void hitPromise.then((source) => {
-              this.hitTestSource = source;
-            });
-          });
-          this.hitTestSourceRequested = true;
-        }
-
         if (this.hitTestSource) {
           const results = frame.getHitTestResults(this.hitTestSource);
           if (results.length > 0) {
@@ -707,6 +879,15 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
             this.lastViewerHitResult = null;
             this.reticle.visible = false;
           }
+        }
+
+        if (
+          this.placedGroup.visible &&
+          !this.placementAnchor &&
+          this.pendingRigidForAnchor &&
+          referenceSpace
+        ) {
+          this.retryPendingAnchorOnFrame(frame, referenceSpace);
         }
 
         if (this.placedGroup.visible && this.placementAnchor) {
