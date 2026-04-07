@@ -6,7 +6,7 @@ This project was generated using [Angular CLI](https://github.com/angular/angula
 
 ## Room AR only
 
-There is **no** separate 3D orbit viewer and **no** `getUserMedia` camera overlay. The page loads **router.glb** first; **Start room AR** stays disabled until the model is ready. Placement uses **continuous hit-test** (cyan ring), **transient hit-test** on each tap (works even when the ring is missing), and a **fixed fallback** in front of the user on the first tap if both miss.
+There is **no** separate 3D orbit viewer and **no** `getUserMedia` camera overlay. The page loads **router.glb** first; **Start room AR** stays disabled until the model is ready. Placement uses **continuous hit-test** (cyan ring), **transient hit-test** on each tap (works even when the ring is missing), and a **fixed fallback** in front of the user on the first tap if both miss. After a real hit, the app requests a WebXR **`XRAnchor`** when the platform allows it, and each frame uses **`XRFrame.getPose(anchor, referenceSpace)`** so the router stays locked in the room while you move. The session prefers **`local-floor`** reference space for more stable vertical alignment.
 
 ## Embedding (WebView)
 

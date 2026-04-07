@@ -23,6 +23,11 @@ interface TransientHitTestBatch {
   readonly results: ReadonlyArray<XRHitTestResult>;
 }
 
+/** When the `anchors` feature is granted, hit results can create world-locked anchors. */
+type HitResultWithAnchor = XRHitTestResult & {
+  createAnchor?: () => Promise<XRAnchor>;
+};
+
 /**
  * Hotspot labels: `css2d` (default) or `sprite` if CSS2D misbehaves in a WebView.
  */
@@ -91,6 +96,10 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   private transientHitTestSource: XRTransientInputHitTestSource | null = null;
   private sessionSelectHandler: ((e: Event) => void) | null = null;
   private xrSessionRef: XRSession | null = null;
+  /** Latest continuous viewer hit; used with reticle for `createAnchor` on tap. */
+  private lastViewerHitResult: XRHitTestResult | null = null;
+  /** Drives `placedGroup` pose every frame so the model stays fixed in the real world. */
+  private placementAnchor: XRAnchor | null = null;
   private readonly tmpMatrix = new THREE.Matrix4();
   private readonly tmpScale = new THREE.Vector3();
 
@@ -119,6 +128,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     if (session) {
       session.end();
     }
+    this.clearPlacementAnchor();
     this.resizeObserver?.disconnect();
     this.clearSpriteLabels();
     this.renderer?.dispose();
@@ -131,12 +141,12 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     const overlayRoot = this.domOverlayRef.nativeElement;
     const withOverlay: XRSessionInit = {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay', 'local'],
+      optionalFeatures: ['dom-overlay', 'local', 'local-floor', 'anchors'],
       domOverlay: { root: overlayRoot },
     };
     const minimal: XRSessionInit = {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['local'],
+      optionalFeatures: ['local', 'local-floor', 'anchors'],
     };
 
     try {
@@ -146,12 +156,14 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       } catch {
         session = await navigator.xr.requestSession('immersive-ar', minimal);
       }
-      this.renderer.xr.setReferenceSpaceType('local');
+      this.renderer.xr.setReferenceSpaceType('local-floor');
       await this.renderer.xr.setSession(session);
 
       this.xrSessionRef = session;
       session.addEventListener('end', () => this.onArSessionEnded());
-      this.sessionSelectHandler = (e: Event) => this.onArSelect(e);
+      this.sessionSelectHandler = (e: Event) => {
+        void this.onArSelect(e);
+      };
       session.addEventListener('select', this.sessionSelectHandler);
 
       void this.requestTransientHitTestSource(session);
@@ -185,6 +197,9 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.transientHitTestSource.cancel();
       this.transientHitTestSource = null;
     }
+
+    this.clearPlacementAnchor();
+    this.lastViewerHitResult = null;
 
     this.applyIdlePresentationStyle();
     this.placedGroup.visible = false;
@@ -302,40 +317,73 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     console.debug('Room AR: could not create transient hit-test source for profiles', profiles);
   }
 
-  private onArSelect(ev?: Event): void {
+  private clearPlacementAnchor(): void {
+    if (this.placementAnchor) {
+      this.placementAnchor.delete();
+      this.placementAnchor = null;
+    }
+  }
+
+  private async tryBindAnchorFromHit(hit: HitResultWithAnchor): Promise<void> {
+    const create = hit.createAnchor;
+    if (typeof create !== 'function') return;
+    try {
+      const anchor = await create.call(hit);
+      if (anchor) {
+        this.clearPlacementAnchor();
+        this.placementAnchor = anchor;
+      }
+    } catch {
+      console.debug('Room AR: createAnchor failed or unsupported');
+    }
+  }
+
+  private async onArSelect(ev?: Event): Promise<void> {
     const referenceSpace = this.renderer.xr.getReferenceSpace();
     if (!referenceSpace) return;
 
     if (this.reticle.visible) {
-      this.applyPlacedGroupFromMatrix(this.reticle.matrix);
+      if (this.lastViewerHitResult) {
+        const hit = this.lastViewerHitResult as HitResultWithAnchor;
+        const pose = hit.getPose(referenceSpace);
+        if (pose) {
+          this.tmpMatrix.fromArray(pose.transform.matrix);
+          this.applyPlacedGroupFromMatrix(this.tmpMatrix);
+          await this.tryBindAnchorFromHit(hit);
+        }
+      } else {
+        this.applyPlacedGroupFromMatrix(this.reticle.matrix);
+      }
+      this.placedGroup.visible = true;
       return;
     }
 
     const xrEvent = ev as XRInputSourceEvent | undefined;
     if (this.transientHitTestSource && xrEvent?.frame) {
-      const pose = this.firstTransientHitPose(
-        xrEvent.frame,
-        xrEvent,
-        referenceSpace
-      );
-      if (pose) {
-        this.tmpMatrix.fromArray(pose.transform.matrix);
-        this.applyPlacedGroupFromMatrix(this.tmpMatrix);
+      const hit = this.firstTransientHitResult(xrEvent.frame, xrEvent);
+      if (hit) {
+        const pose = hit.getPose(referenceSpace);
+        if (pose) {
+          this.tmpMatrix.fromArray(pose.transform.matrix);
+          this.applyPlacedGroupFromMatrix(this.tmpMatrix);
+          await this.tryBindAnchorFromHit(hit as HitResultWithAnchor);
+          this.placedGroup.visible = true;
+        }
         return;
       }
       console.debug('Room AR: transient hit test returned no results');
     }
 
     if (!this.placedGroup.visible) {
+      this.clearPlacementAnchor();
       this.applyFallbackPlacement();
     }
   }
 
-  private firstTransientHitPose(
+  private firstTransientHitResult(
     frame: XRFrame,
-    event: XRInputSourceEvent,
-    referenceSpace: XRReferenceSpace
-  ): XRPose | null {
+    event: XRInputSourceEvent
+  ): XRHitTestResult | null {
     if (!this.transientHitTestSource) return null;
     const fn = (frame as XRFrame & { getHitTestResultsForTransientInput?: unknown })
       .getHitTestResultsForTransientInput;
@@ -348,8 +396,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     ).call(frame, this.transientHitTestSource, event);
     for (const batch of batches) {
       for (const result of batch.results) {
-        const pose = result.getPose(referenceSpace);
-        if (pose) return pose;
+        return result;
       }
     }
     return null;
@@ -362,7 +409,19 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.tmpScale
     );
     this.placedGroup.scale.set(1, 1, 1);
-    this.placedGroup.visible = true;
+  }
+
+  private updatePlacedGroupFromAnchor(frame: XRFrame): void {
+    if (!this.placementAnchor) return;
+    const referenceSpace = this.renderer.xr.getReferenceSpace();
+    if (!referenceSpace) return;
+    const pose = frame.getPose(
+      this.placementAnchor as unknown as XRSpace,
+      referenceSpace
+    );
+    if (!pose) return;
+    this.tmpMatrix.fromArray(pose.transform.matrix);
+    this.applyPlacedGroupFromMatrix(this.tmpMatrix);
   }
 
   /** Last resort in local space when continuous reticle and transient hits both miss (first placement only). */
@@ -585,13 +644,19 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
           if (results.length > 0) {
             const pose = results[0].getPose(referenceSpace);
             if (pose) {
+              this.lastViewerHitResult = results[0];
               this.reticle.visible = true;
               this.tmpMatrix.fromArray(pose.transform.matrix);
               this.reticle.matrix.copy(this.tmpMatrix);
             }
           } else {
+            this.lastViewerHitResult = null;
             this.reticle.visible = false;
           }
+        }
+
+        if (this.placedGroup.visible && this.placementAnchor) {
+          this.updatePlacedGroupFromAnchor(frame);
         }
       }
     }
