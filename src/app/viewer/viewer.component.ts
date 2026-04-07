@@ -109,6 +109,36 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   private readonly zone = inject(NgZone);
   private readonly cdr = inject(ChangeDetectorRef);
 
+  /** Throttle for debug ingest (session 05b9d9). */
+  private debugArFrame = 0;
+
+  // #region agent log
+  private dbgLog(
+    hypothesisId: string,
+    location: string,
+    message: string,
+    data: Record<string, unknown>,
+    runId = 'pre-fix'
+  ): void {
+    fetch('http://127.0.0.1:7913/ingest/77e9c71a-58dc-48e1-991b-949e089be7ff', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Debug-Session-Id': '05b9d9',
+      },
+      body: JSON.stringify({
+        sessionId: '05b9d9',
+        runId,
+        hypothesisId,
+        location,
+        message,
+        data,
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }
+  // #endregion
+
   ngAfterViewInit(): void {
     this.initScene();
     this.initRenderers();
@@ -334,6 +364,11 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
   private async tryBindAnchorFromHit(hit: HitResultWithAnchor): Promise<void> {
     const create = hit.createAnchor;
+    // #region agent log
+    this.dbgLog('D', 'viewer.component.ts:tryBindAnchor', 'createAnchor probe', {
+      hasCreateAnchor: typeof create === 'function',
+    });
+    // #endregion
     if (typeof create !== 'function') return;
     try {
       const anchor = await create.call(hit);
@@ -341,8 +376,16 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         this.clearPlacementAnchor();
         this.placementAnchor = anchor;
       }
+      // #region agent log
+      this.dbgLog('D', 'viewer.component.ts:tryBindAnchor', 'createAnchor result', {
+        gotAnchor: !!anchor,
+      });
+      // #endregion
     } catch {
       console.debug('Room AR: createAnchor failed or unsupported');
+      // #region agent log
+      this.dbgLog('D', 'viewer.component.ts:tryBindAnchor', 'createAnchor threw', {});
+      // #endregion
     }
   }
 
@@ -359,8 +402,19 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
           this.applyPlacedGroupFromMatrix(this.tmpMatrix);
           await this.tryBindAnchorFromHit(hit);
         }
+        // #region agent log
+        this.dbgLog('C', 'viewer.component.ts:onArSelect', 'placement path', {
+          path: 'reticle_lastViewerHit',
+          poseOk: !!pose,
+        });
+        // #endregion
       } else {
         this.applyPlacedGroupFromMatrix(this.reticle.matrix);
+        // #region agent log
+        this.dbgLog('C', 'viewer.component.ts:onArSelect', 'placement path', {
+          path: 'reticle_matrix_only',
+        });
+        // #endregion
       }
       this.placedGroup.visible = true;
       return;
@@ -377,6 +431,12 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
           await this.tryBindAnchorFromHit(hit as HitResultWithAnchor);
           this.placedGroup.visible = true;
         }
+        // #region agent log
+        this.dbgLog('C', 'viewer.component.ts:onArSelect', 'placement path', {
+          path: 'transient_hit',
+          poseOk: !!pose,
+        });
+        // #endregion
         return;
       }
       console.debug('Room AR: transient hit test returned no results');
@@ -385,6 +445,11 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     if (!this.placedGroup.visible) {
       this.clearPlacementAnchor();
       this.applyFallbackPlacement();
+      // #region agent log
+      this.dbgLog('C', 'viewer.component.ts:onArSelect', 'placement path', {
+        path: 'fallback_local_space',
+      });
+      // #endregion
     }
   }
 
@@ -427,9 +492,26 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.placementAnchor as unknown as XRSpace,
       referenceSpace
     );
-    if (!pose) return;
+    if (!pose) {
+      // #region agent log
+      if (this.debugArFrame % 45 === 0) {
+        this.dbgLog('E', 'viewer.component.ts:updatePlacedGroupFromAnchor', 'anchor pose null', {});
+      }
+      // #endregion
+      return;
+    }
     this.tmpMatrix.fromArray(pose.transform.matrix);
     this.applyPlacedGroupFromMatrix(this.tmpMatrix);
+    // #region agent log
+    if (this.debugArFrame % 45 === 0) {
+      const p = this.placedGroup.position;
+      this.dbgLog('E', 'viewer.component.ts:updatePlacedGroupFromAnchor', 'anchor tick', {
+        x: Math.round(p.x * 1000) / 1000,
+        y: Math.round(p.y * 1000) / 1000,
+        z: Math.round(p.z * 1000) / 1000,
+      });
+    }
+    // #endregion
   }
 
   /** Last resort in local space when continuous reticle and transient hits both miss (first placement only). */
@@ -634,6 +716,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       const referenceSpace = this.renderer.xr.getReferenceSpace();
       const session = this.renderer.xr.getSession();
       if (referenceSpace && session) {
+        this.debugArFrame += 1;
         if (!this.hitTestSourceRequested) {
           this.hitTestSourceRequested = true;
           void session
@@ -647,9 +730,19 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
             })
             .then((source) => {
               if (source) this.hitTestSource = source;
+              // #region agent log
+              this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'hitTestSource resolved', {
+                hasSource: !!source,
+              });
+              // #endregion
             })
             .catch((err) => {
               console.warn('Room AR: continuous hit-test source failed', err);
+              // #region agent log
+              this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'hitTestSource rejected', {
+                err: String(err),
+              });
+              // #endregion
             });
         }
 
@@ -667,6 +760,31 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
             this.lastViewerHitResult = null;
             this.reticle.visible = false;
           }
+          // #region agent log
+          if (this.debugArFrame % 30 === 0) {
+            const p = this.placedGroup.position;
+            this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'xr frame sample', {
+              resultsLen: results.length,
+              reticleVisible: this.reticle.visible,
+              poseOk: results.length > 0 ? !!results[0].getPose(referenceSpace) : false,
+              placedVisible: this.placedGroup.visible,
+              hasAnchor: !!this.placementAnchor,
+              pgX: Math.round(p.x * 1000) / 1000,
+              pgY: Math.round(p.y * 1000) / 1000,
+              pgZ: Math.round(p.z * 1000) / 1000,
+            });
+          }
+          // #endregion
+        } else if (this.debugArFrame % 30 === 0) {
+          // #region agent log
+          this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'xr frame sample', {
+            resultsLen: -1,
+            reticleVisible: this.reticle.visible,
+            hitSourceReady: false,
+            placedVisible: this.placedGroup.visible,
+            hasAnchor: !!this.placementAnchor,
+          });
+          // #endregion
         }
 
         if (this.placedGroup.visible && this.placementAnchor) {
