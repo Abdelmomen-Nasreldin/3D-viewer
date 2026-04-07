@@ -92,21 +92,23 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   private arHemisphere: THREE.HemisphereLight | null = null;
 
   private hitTestSource: XRHitTestSource | null = null;
-  private hitTestSourceRequested = false;
+  /** True while `requestHitTestSource` is in flight (avoids stacking requests). */
+  private hitTestSourceInFlight = false;
+  /** After a failed/empty acquire, retry when `debugArFrame` reaches this value (bounded cadence for WebView). */
+  private hitTestRetryAfterFrame = 0;
   private transientHitTestSource: XRTransientInputHitTestSource | null = null;
   private sessionSelectHandler: ((e: Event) => void) | null = null;
   private xrSessionRef: XRSession | null = null;
   /** Latest continuous viewer hit; used with reticle for `createAnchor` on tap. */
   private lastViewerHitResult: XRHitTestResult | null = null;
   /**
-   * When set, `updatePlacedGroupFromAnchor` runs each frame.
-   * Disabled: some runtimes return unstable anchor poses so the model appears to slide; hit-matrix placement in
-   * `local-floor` / `local` is sufficient for typical room-scale use.
+   * When non-null and poses are stable, `updatePlacedGroupFromAnchor` runs each frame for world-locked placement.
+   * Requires session `anchors` feature and successful `createAnchor` on the placement hit.
    */
-  private static readonly AR_USE_ANCHOR_TRACKING = false;
-
-  /** Drives `placedGroup` pose each frame when {@link AR_USE_ANCHOR_TRACKING} is true. */
   private placementAnchor: XRAnchor | null = null;
+  /** Consecutive frames with null anchor pose; beyond threshold we drop anchor and keep last matrix pose. */
+  private anchorPoseNullStreak = 0;
+  private static readonly ANCHOR_POSE_NULL_MAX_STREAK = 120;
   private readonly tmpMatrix = new THREE.Matrix4();
   private readonly tmpScale = new THREE.Vector3();
 
@@ -243,7 +245,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.renderer.xr.setReferenceSpaceType(floorGranted ? 'local-floor' : 'local');
       // #region agent log
       this.dbgLog('B', 'viewer.component.ts:startArSession', 'placement mode', {
-        anchorTracking: ViewerComponent.AR_USE_ANCHOR_TRACKING,
+        anchorsFeature: session.enabledFeatures?.includes('anchors') ?? false,
         refSpace: floorGranted ? 'local-floor' : 'local',
       });
       // #endregion
@@ -278,7 +280,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     }
     this.xrSessionRef = null;
 
-    this.hitTestSourceRequested = false;
+    this.hitTestSourceInFlight = false;
+    this.hitTestRetryAfterFrame = 0;
     if (this.hitTestSource) {
       this.hitTestSource.cancel();
       this.hitTestSource = null;
@@ -420,10 +423,12 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       this.placementAnchor.delete();
       this.placementAnchor = null;
     }
+    this.anchorPoseNullStreak = 0;
   }
 
   private async tryBindAnchorFromHit(hit: HitResultWithAnchor): Promise<void> {
-    if (!ViewerComponent.AR_USE_ANCHOR_TRACKING) return;
+    const session = this.xrSessionRef;
+    if (!session?.enabledFeatures?.includes('anchors')) return;
     const create = hit.createAnchor;
     // #region agent log
     this.dbgLog('D', 'viewer.component.ts:tryBindAnchor', 'createAnchor probe', {
@@ -436,6 +441,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       if (anchor) {
         this.clearPlacementAnchor();
         this.placementAnchor = anchor;
+        this.anchorPoseNullStreak = 0;
       }
       // #region agent log
       this.dbgLog('D', 'viewer.component.ts:tryBindAnchor', 'createAnchor result', {
@@ -538,6 +544,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     return null;
   }
 
+  /** Sets `placedGroup` from a 4×4 pose in the XR reference space (`local-floor` or `local`), not viewer/camera space. */
   private applyPlacedGroupFromMatrix(matrix: THREE.Matrix4): void {
     matrix.decompose(
       this.placedGroup.position,
@@ -556,13 +563,24 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       referenceSpace
     );
     if (!pose) {
+      this.anchorPoseNullStreak += 1;
+      if (this.anchorPoseNullStreak >= ViewerComponent.ANCHOR_POSE_NULL_MAX_STREAK) {
+        console.warn(
+          'Room AR: anchor pose unstable; falling back to last placed transform'
+        );
+        this.clearPlacementAnchor();
+        this.anchorPoseNullStreak = 0;
+      }
       // #region agent log
       if (this.debugArFrame % 45 === 0) {
-        this.dbgLog('E', 'viewer.component.ts:updatePlacedGroupFromAnchor', 'anchor pose null', {});
+        this.dbgLog('E', 'viewer.component.ts:updatePlacedGroupFromAnchor', 'anchor pose null', {
+          streak: this.anchorPoseNullStreak,
+        });
       }
       // #endregion
       return;
     }
+    this.anchorPoseNullStreak = 0;
     this.tmpMatrix.fromArray(pose.transform.matrix);
     this.applyPlacedGroupFromMatrix(this.tmpMatrix);
     // #region agent log
@@ -780,33 +798,48 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       const session = this.renderer.xr.getSession();
       if (referenceSpace && session) {
         this.debugArFrame += 1;
-        if (!this.hitTestSourceRequested) {
-          this.hitTestSourceRequested = true;
-          void session
-            .requestReferenceSpace('viewer')
-            .then((viewerSpace) => {
-              const requestHitTestSource = session.requestHitTestSource;
-              if (typeof requestHitTestSource !== 'function') return;
-              const hitPromise = requestHitTestSource({ space: viewerSpace });
-              if (!hitPromise) return;
-              return hitPromise;
-            })
-            .then((source) => {
-              if (source) this.hitTestSource = source;
-              // #region agent log
-              this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'hitTestSource resolved', {
-                hasSource: !!source,
+
+        const scheduleHitTestRetry = (framesFromNow: number): void => {
+          this.hitTestRetryAfterFrame = this.debugArFrame + framesFromNow;
+        };
+
+        if (!this.hitTestSource && !this.hitTestSourceInFlight) {
+          if (this.debugArFrame >= this.hitTestRetryAfterFrame) {
+            this.hitTestSourceInFlight = true;
+            void session
+              .requestReferenceSpace('viewer')
+              .then((viewerSpace) => {
+                const requestHitTestSource = session.requestHitTestSource;
+                if (typeof requestHitTestSource !== 'function') return undefined;
+                const hitPromise = requestHitTestSource({ space: viewerSpace });
+                if (!hitPromise) return undefined;
+                return hitPromise;
+              })
+              .then((source) => {
+                this.hitTestSourceInFlight = false;
+                if (source) {
+                  this.hitTestSource = source;
+                } else {
+                  console.warn('Room AR: continuous hit-test source returned empty');
+                  scheduleHitTestRetry(15);
+                }
+                // #region agent log
+                this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'hitTestSource resolved', {
+                  hasSource: !!source,
+                });
+                // #endregion
+              })
+              .catch((err) => {
+                this.hitTestSourceInFlight = false;
+                scheduleHitTestRetry(15);
+                console.warn('Room AR: continuous hit-test source failed', err);
+                // #region agent log
+                this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'hitTestSource rejected', {
+                  err: String(err),
+                });
+                // #endregion
               });
-              // #endregion
-            })
-            .catch((err) => {
-              console.warn('Room AR: continuous hit-test source failed', err);
-              // #region agent log
-              this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'hitTestSource rejected', {
-                err: String(err),
-              });
-              // #endregion
-            });
+          }
         }
 
         if (this.hitTestSource) {
@@ -865,11 +898,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
           // #endregion
         }
 
-        if (
-          ViewerComponent.AR_USE_ANCHOR_TRACKING &&
-          this.placedGroup.visible &&
-          this.placementAnchor
-        ) {
+        if (this.placedGroup.visible && this.placementAnchor) {
           this.updatePlacedGroupFromAnchor(frame);
         }
       }
