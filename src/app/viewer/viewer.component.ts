@@ -709,11 +709,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
             void session
               .requestReferenceSpace('viewer')
               .then((viewerSpace) => {
-                const requestHitTestSource = session.requestHitTestSource;
-                if (typeof requestHitTestSource !== 'function') return undefined;
-                const hitPromise = requestHitTestSource({ space: viewerSpace });
-                if (!hitPromise) return undefined;
-                return hitPromise;
+                if (typeof session.requestHitTestSource !== 'function') return undefined;
+                return session.requestHitTestSource({ space: viewerSpace });
               })
               .then((source) => {
                 this.hitTestSourceInFlight = false;
@@ -721,7 +718,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
                   this.hitTestSource = source;
                 } else {
                   console.warn('Room AR: continuous hit-test source returned empty');
-                  scheduleHitTestRetry(15);
+                  scheduleHitTestRetry(30);
                 }
                 // #region agent log
                 this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'hitTestSource resolved', {
@@ -731,7 +728,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
               })
               .catch((err) => {
                 this.hitTestSourceInFlight = false;
-                scheduleHitTestRetry(15);
+                scheduleHitTestRetry(30);
                 console.warn('Room AR: continuous hit-test source failed', err);
                 // #region agent log
                 this.dbgLog('A', 'viewer.component.ts:onAnimationFrame', 'hitTestSource rejected', {
