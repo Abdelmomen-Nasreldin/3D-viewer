@@ -1,42 +1,61 @@
 <div class="viewer-root">
   <div #domOverlayRoot class="xr-dom-overlay">
     <header class="toolbar">
-      @if (!arSessionActive()) {
+      @if (!arSessionActive() && !markerArActive()) {
         <button
           type="button"
           class="mode-btn primary"
+          [disabled]="!modelLoaded() || markerArBusy()"
+          (click)="startMarkerArSession()"
+        >
+          @if (!modelLoaded()) {
+            Loading router…
+          } @else if (markerArBusy()) {
+            Starting camera…
+          } @else {
+            Marker AR
+          }
+        </button>
+        <button
+          type="button"
+          class="mode-btn secondary"
           [disabled]="!arChecked() || !arSupported() || !modelLoaded()"
           (click)="startArSession()"
         >
-          @if (arSupported() && !modelLoaded()) {
-            Loading router…
-          } @else {
-            Start room AR
-          }
+          Room AR (WebXR)
+        </button>
+      }
+      @if (markerArActive()) {
+        <button type="button" class="mode-btn exit" (click)="stopMarkerArSession()">
+          Exit marker AR
         </button>
       }
       @if (arSessionActive()) {
         <button type="button" class="mode-btn exit" (click)="endArSession()">
-          Exit AR
+          Exit room AR
         </button>
       }
     </header>
     @if (!arChecked()) {
-      <p class="ar-status">Checking AR support…</p>
+      <p class="ar-status">Checking WebXR support…</p>
     }
     @if (arChecked() && !arSupported()) {
-      <p class="ar-fallback">
-        WebXR <strong>immersive-ar</strong> is not available in this browser or WebView.
-        Room AR cannot run here. Use a device and shell that expose WebXR AR (HTTPS
-        required).
+      <p class="ar-info">
+        <strong>Room AR</strong> needs WebXR <code>immersive-ar</code> in this browser or WebView.
+        Use <strong>Marker AR</strong> instead: print or display the
+        <a href="https://raw.githubusercontent.com/AR-js-org/AR.js/master/data/images/hiro.png" target="_blank" rel="noopener noreferrer">Hiro marker</a>
+        (same pattern as <code>public/ar-js/patt.hiro</code>) and point the camera at it. HTTPS and camera permission required.
+      </p>
+    }
+    @if (markerArActive()) {
+      <p class="ar-hint">
+        Point the camera at the <strong>Hiro</strong> marker. The router appears when the marker is detected. Good lighting helps tracking.
       </p>
     }
     @if (arSessionActive()) {
       <p class="ar-hint">
-        Point at a floor or table. When you see the cyan ring on a surface, tap to
-        place the router. You can also tap without a ring—each tap ray-casts to
-        surfaces. If nothing is detected, the router appears in front of you as a
-        fallback (first tap only).
+        Point at a floor or table. When you see the cyan ring on a surface, tap to place the router. You can also tap without a ring—each tap ray-casts to
+        surfaces. If nothing is detected, the router appears in front of you as a fallback (first tap only).
       </p>
     }
   </div>

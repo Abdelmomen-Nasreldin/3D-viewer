@@ -89,7 +89,19 @@
   background: rgba(0, 212, 255, 0.32);
 }
 
+.mode-btn.secondary {
+  border-color: rgba(160, 180, 230, 0.45);
+  background: rgba(255, 255, 255, 0.04);
+  color: #a8b8e8;
+}
+
+.mode-btn.secondary:hover:not(:disabled) {
+  background: rgba(160, 180, 230, 0.12);
+  border-color: rgba(160, 180, 230, 0.65);
+}
+
 .ar-status,
+.ar-info,
 .ar-fallback,
 .ar-hint {
   pointer-events: auto;
@@ -105,6 +117,16 @@
   background: rgba(10, 25, 47, 0.82);
   border: 1px solid rgba(0, 212, 255, 0.2);
   color: #8fa8e8;
+}
+
+.ar-info {
+  background: rgba(10, 25, 47, 0.82);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  color: #a8b8e8;
+}
+
+.ar-info a {
+  color: #7ee8ff;
 }
 
 .ar-fallback {

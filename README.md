@@ -1,30 +1,33 @@
 # 3dViewer
 
-Angular + Three.js **WebXR room AR** for a Vodafone router GLB: hit-test placement in the real world with **CSS2D or sprite** hotspot labels in the same scene.
+Angular + Three.js viewer for a Vodafone router GLB with:
+
+- **3D view** — orbit the model and hotspots (default after load).
+- **Marker AR** — [AR.js](https://ar-js-org.github.io/AR.js/) + `getUserMedia`: tracks a **Hiro** pattern marker (`public/ar-js/patt.hiro`) so the router and labels stay locked to the marker. Works in typical WebViews **without WebXR**.
+- **Room AR (WebXR)** — optional hit-test placement, transient tap hits, anchors when the platform supports them (see previous behaviour).
+
+Hotspot labels: **CSS2D** (default) or **sprite** if your WebView mis-layers CSS (`[labelRender]="'sprite'"`).
 
 This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 19.2.15.
 
-## Room AR only
+## Marker AR assets
 
-There is **no** separate 3D orbit viewer and **no** `getUserMedia` camera overlay. The page loads **router.glb** first; **Start room AR** stays disabled until the model is ready. Placement uses **continuous hit-test** (cyan ring), **transient hit-test** on each tap (works even when the ring is missing), and a **fixed fallback** in front of the user on the first tap if both miss. After a real hit, the app requests a WebXR **`XRAnchor`** when the platform allows it, and each frame uses **`XRFrame.getPose(anchor, referenceSpace)`** so the router stays locked in the room while you move. The session prefers **`local-floor`** reference space for more stable vertical alignment.
+Calibration and pattern files are served from the app root:
+
+- [`public/ar-js/camera_para.dat`](public/ar-js/camera_para.dat)
+- [`public/ar-js/patt.hiro`](public/ar-js/patt.hiro)
+
+`THREEx.ArToolkitContext.baseURL` is set to `ar-js/` under the page origin so those URLs resolve correctly. Replace `patt.hiro` with a [custom pattern](https://ar-js-org.github.io/AR.js/three.js/marker-training/) if Vodafone ships their own marker image.
 
 ## Embedding (WebView)
 
-Ship over **HTTPS**. The WebView must expose **WebXR `immersive-ar`** with **hit-test** (and ideally **dom-overlay** for the toolbar). Requirements vary by Android WebView version and iOS/WKWebView.
+Use **HTTPS**. **Marker AR** needs **camera** permission. **Room AR** additionally needs **WebXR `immersive-ar`** with **hit-test** (and ideally **dom-overlay** for the toolbar).
 
-| Topic | Android | iOS |
-|--------|---------|-----|
+| Topic | Marker AR | Room AR |
+|--------|-----------|---------|
 | URL | HTTPS | HTTPS |
-| WebXR | Recent System WebView / Chrome where `immersive-ar` is available | WKWebView + OS support for WebXR AR where applicable |
-| Permissions | Camera / XR as prompted by the browser | Same; `Info.plist` usage strings as required |
-
-### Sprite labels in difficult WebViews
-
-If CSS2D labels mis-layer in AR:
-
-```html
-<app-viewer [labelRender]="'sprite'" />
-```
+| Camera | Required | Required |
+| WebXR | No | Yes (`immersive-ar`, hit-test) |
 
 ## Development server
 
@@ -32,7 +35,7 @@ If CSS2D labels mis-layer in AR:
 ng serve
 ```
 
-Open `http://localhost:4200/`. **Room AR** must be tested on a **real device** with WebXR AR support; desktop browsers often report AR as unsupported.
+Open `http://localhost:4200/`. **Marker AR** and **Room AR** need a **real device** with a camera; use a printed or on-screen Hiro marker for marker mode.
 
 ## Building
 
@@ -40,7 +43,7 @@ Open `http://localhost:4200/`. **Room AR** must be tested on a **real device** w
 ng build
 ```
 
-Output in `dist/`.
+Output in `dist/`. The AR.js dependency increases the main bundle size; adjust Angular **budgets** in `angular.json` if needed.
 
 ## Unit tests
 

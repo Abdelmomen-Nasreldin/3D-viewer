@@ -12,10 +12,12 @@ import {
 } from '@angular/core';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   CSS2DRenderer,
   CSS2DObject,
 } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { THREEx } from '@ar-js-org/ar.js-threejs';
 import { Annotation } from '../services/annotation.model';
 
 /** WebXR hit-test batch (not always in TS DOM lib). */
@@ -79,17 +81,26 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   readonly arSupported = signal(false);
   readonly arChecked = signal(false);
   readonly arSessionActive = signal(false);
+  readonly markerArActive = signal(false);
+  readonly markerArBusy = signal(false);
   readonly modelLoaded = signal(false);
 
   private renderer!: THREE.WebGLRenderer;
   private css2DRenderer!: CSS2DRenderer;
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
+  private orbitControls!: OrbitControls;
+  private orbitKeyLight!: THREE.DirectionalLight;
   private resizeObserver!: ResizeObserver;
   private model: THREE.Group | null = null;
   private readonly placedGroup = new THREE.Group();
   private reticle!: THREE.Mesh;
   private arHemisphere: THREE.HemisphereLight | null = null;
+
+  private arToolkitSource: InstanceType<typeof THREEx.ArToolkitSource> | null = null;
+  private arToolkitContext: InstanceType<typeof THREEx.ArToolkitContext> | null = null;
+  private arMarkerControls: InstanceType<typeof THREEx.ArMarkerControls> | null = null;
+  private markerRoot: THREE.Group | null = null;
 
   private hitTestSource: XRHitTestSource | null = null;
   private hitTestSourceRequested = false;
@@ -113,6 +124,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.initScene();
     this.initRenderers();
     this.initLights();
+    this.initOrbitControls();
     this.initReticle();
     this.initXrControllers();
     this.placedGroup.visible = false;
@@ -128,15 +140,131 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     if (session) {
       session.end();
     }
+    this.stopMarkerArSession();
     this.clearPlacementAnchor();
     this.resizeObserver?.disconnect();
     this.clearSpriteLabels();
+    this.orbitControls?.dispose();
     this.renderer?.dispose();
     this.css2DRenderer?.domElement.remove();
   }
 
+  async startMarkerArSession(): Promise<void> {
+    if (!this.modelLoaded() || this.markerArActive() || this.markerArBusy()) return;
+
+    this.markerArBusy.set(true);
+    this.zone.run(() => this.cdr.markForCheck());
+
+    if (this.renderer.xr.isPresenting) {
+      this.endArSession();
+    }
+
+    this.stopMarkerArSession();
+
+    try {
+      this.orbitControls.enabled = false;
+      this.applyArPresentationStyle();
+      THREEx.ArToolkitContext.baseURL = this.arJsAssetBaseUrl();
+
+      const wide = window.innerWidth > window.innerHeight;
+      this.arToolkitSource = new THREEx.ArToolkitSource({
+        sourceType: 'webcam',
+        sourceWidth: wide ? 640 : 480,
+        sourceHeight: wide ? 480 : 640,
+      });
+
+      this.markerArActive.set(true);
+
+      this.arToolkitSource.init(
+        () => {
+          const el = this.arToolkitSource!.domElement as HTMLElement;
+          el.remove();
+          const container = this.containerRef.nativeElement;
+          container.insertBefore(el, this.renderer.domElement);
+
+          const video = el as HTMLVideoElement;
+          const bootContext = () => {
+            if (!this.arToolkitContext) {
+              this.initMarkerArContext();
+            }
+          };
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            bootContext();
+          } else {
+            video.addEventListener('canplay', bootContext, { once: true });
+          }
+
+          setTimeout(() => this.resizeMarkerArToContainer(), 400);
+          this.markerArBusy.set(false);
+          this.zone.run(() => this.cdr.markForCheck());
+        },
+        () => {
+          console.error('AR.js: webcam init failed');
+          this.stopMarkerArSession();
+          this.markerArBusy.set(false);
+          this.zone.run(() => this.cdr.markForCheck());
+        }
+      );
+    } catch (e) {
+      console.error('AR.js: start failed', e);
+      this.stopMarkerArSession();
+      this.markerArBusy.set(false);
+      this.zone.run(() => this.cdr.markForCheck());
+    }
+  }
+
+  stopMarkerArSession(): void {
+    if (
+      !this.markerArActive() &&
+      !this.arToolkitSource &&
+      !this.arToolkitContext &&
+      !this.arMarkerControls &&
+      !this.markerRoot
+    ) {
+      return;
+    }
+
+    if (this.arMarkerControls) {
+      try {
+        this.arMarkerControls.dispose();
+      } catch {
+        /* ignore */
+      }
+      this.arMarkerControls = null;
+    }
+
+    this.arToolkitContext = null;
+
+    if (this.arToolkitSource?.domElement) {
+      const video = this.arToolkitSource.domElement as HTMLVideoElement;
+      const stream = video.srcObject as MediaStream | null;
+      stream?.getTracks().forEach((t) => t.stop());
+      video.srcObject = null;
+      video.remove();
+    }
+    this.arToolkitSource = null;
+
+    this.placedGroup.removeFromParent();
+    this.scene.add(this.placedGroup);
+    this.resetPlacedGroupForOrbit();
+
+    if (this.markerRoot) {
+      this.markerRoot.removeFromParent();
+      this.markerRoot = null;
+    }
+
+    this.markerArActive.set(false);
+    this.markerArBusy.set(false);
+    this.applyOrbitPresentationStyle();
+    this.orbitControls.enabled = true;
+    this.zone.run(() => this.cdr.markForCheck());
+  }
+
   async startArSession(): Promise<void> {
     if (!navigator.xr || !this.arSupported() || !this.modelLoaded()) return;
+
+    this.stopMarkerArSession();
+    this.orbitControls.enabled = false;
 
     const overlayRoot = this.domOverlayRef.nativeElement;
     const withOverlay: XRSessionInit = {
@@ -169,6 +297,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       void this.requestTransientHitTestSource(session);
 
       this.applyArPresentationStyle();
+      this.ensurePlacedGroupOnSceneForWebXr();
       this.placedGroup.visible = false;
       this.arSessionActive.set(true);
       this.zone.run(() => this.cdr.markForCheck());
@@ -201,10 +330,13 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.clearPlacementAnchor();
     this.lastViewerHitResult = null;
 
-    this.applyIdlePresentationStyle();
-    this.placedGroup.visible = false;
+    this.applyOrbitPresentationStyle();
+    this.ensurePlacedGroupOnSceneForWebXr();
+    this.resetPlacedGroupForOrbit();
+    this.placedGroup.visible = true;
     this.reticle.visible = false;
     this.arSessionActive.set(false);
+    this.orbitControls.enabled = true;
     this.zone.run(() => this.cdr.markForCheck());
   }
 
@@ -240,7 +372,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     const h = container.clientHeight || 1;
 
     this.camera = new THREE.PerspectiveCamera(45, w / h, 0.01, 1000);
-    this.camera.position.set(0, 1.6, 0);
+    this.camera.position.set(2.6, 1.5, 2.6);
   }
 
   private initRenderers(): void {
@@ -274,6 +406,98 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.arHemisphere.position.set(0.5, 1, 0.25);
     this.arHemisphere.visible = false;
     this.scene.add(this.arHemisphere);
+
+    this.orbitKeyLight = new THREE.DirectionalLight(0xffffff, 1.15);
+    this.orbitKeyLight.position.set(5, 10, 7);
+    this.scene.add(this.orbitKeyLight);
+  }
+
+  private initOrbitControls(): void {
+    this.orbitControls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.orbitControls.enableDamping = true;
+    this.orbitControls.dampingFactor = 0.06;
+    this.orbitControls.target.set(0, 0.12, 0);
+    this.orbitControls.update();
+  }
+
+  private arJsAssetBaseUrl(): string {
+    return new URL('ar-js/', document.baseURI).href;
+  }
+
+  private getArSourceOrientation(): string {
+    const el = this.arToolkitSource?.domElement as HTMLVideoElement | undefined;
+    if (!el || !el.videoWidth || !el.videoHeight) {
+      return window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
+    }
+    return el.videoWidth > el.videoHeight ? 'landscape' : 'portrait';
+  }
+
+  private initMarkerArContext(): void {
+    if (!this.arToolkitSource || this.arToolkitContext) return;
+
+    this.markerRoot = new THREE.Group();
+    this.markerRoot.matrixAutoUpdate = false;
+    this.scene.add(this.markerRoot);
+
+    this.placedGroup.removeFromParent();
+    this.markerRoot.add(this.placedGroup);
+    this.placedGroup.visible = true;
+    this.placedGroup.position.set(0, 0.08, 0);
+    this.placedGroup.quaternion.identity();
+    this.placedGroup.scale.set(1, 1, 1);
+
+    const base = this.arJsAssetBaseUrl();
+    this.arToolkitContext = new THREEx.ArToolkitContext({
+      cameraParametersUrl: `${base}camera_para.dat`,
+      detectionMode: 'mono',
+    });
+
+    this.arToolkitContext.init(() => {
+      if (!this.arToolkitContext) return;
+      this.camera.projectionMatrix.copy(this.arToolkitContext.getProjectionMatrix());
+      const ac = this.arToolkitContext.arController as {
+        orientation?: string;
+        options?: { orientation?: string };
+      } | null;
+      if (ac) {
+        const ori = this.getArSourceOrientation();
+        ac.orientation = ori;
+        if (ac.options) ac.options.orientation = ori;
+      }
+
+      this.arMarkerControls = new THREEx.ArMarkerControls(this.arToolkitContext, this.markerRoot!, {
+        type: 'pattern',
+        patternUrl: `${base}patt.hiro`,
+        changeMatrixMode: 'modelViewMatrix',
+      });
+
+      this.zone.run(() => this.cdr.markForCheck());
+      setTimeout(() => this.resizeMarkerArToContainer(), 100);
+    });
+  }
+
+  private resizeMarkerArToContainer(): void {
+    if (!this.markerArActive() || !this.arToolkitSource?.ready) return;
+    this.arToolkitSource.onResizeElement();
+    this.arToolkitSource.copyElementSizeTo(this.renderer.domElement);
+    const canvas = this.arToolkitContext?.arController?.canvas as HTMLElement | undefined;
+    if (canvas) {
+      this.arToolkitSource.copyElementSizeTo(canvas);
+    }
+  }
+
+  private resetPlacedGroupForOrbit(): void {
+    this.placedGroup.position.set(0, 0, 0);
+    this.placedGroup.quaternion.identity();
+    this.placedGroup.scale.set(1, 1, 1);
+  }
+
+  /** WebXR expects `placedGroup` attached to the scene, not under the AR.js marker root. */
+  private ensurePlacedGroupOnSceneForWebXr(): void {
+    if (this.placedGroup.parent !== this.scene) {
+      this.placedGroup.removeFromParent();
+      this.scene.add(this.placedGroup);
+    }
   }
 
   private initReticle(): void {
@@ -458,6 +682,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
         this.placedGroup.add(this.model);
         this.placeAnnotations();
+        this.placedGroup.visible = true;
         this.modelLoaded.set(true);
         this.zone.run(() => this.cdr.markForCheck());
       },
@@ -594,16 +819,18 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     if (this.arHemisphere) {
       this.arHemisphere.visible = true;
     }
+    this.orbitKeyLight.visible = false;
     this.scene.environment = null;
     this.reticle.visible = false;
   }
 
-  private applyIdlePresentationStyle(): void {
+  private applyOrbitPresentationStyle(): void {
     this.scene.background = new THREE.Color(0x1a1a2e);
     this.renderer.setClearColor(0x000000, 1);
     if (this.arHemisphere) {
       this.arHemisphere.visible = false;
     }
+    this.orbitKeyLight.visible = true;
     this.scene.environment = null;
   }
 
@@ -617,10 +844,17 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
     this.css2DRenderer.setSize(w, h);
+    this.resizeMarkerArToContainer();
   }
 
   private onAnimationFrame(_time: number, frame: XRFrame | null): void {
     const presenting = this.renderer.xr.isPresenting;
+
+    if (this.markerArActive() && this.arToolkitSource?.ready && this.arToolkitContext) {
+      this.arToolkitContext.update(this.arToolkitSource.domElement);
+    } else if (!presenting) {
+      this.orbitControls.update();
+    }
 
     if (presenting && frame) {
       const referenceSpace = this.renderer.xr.getReferenceSpace();
