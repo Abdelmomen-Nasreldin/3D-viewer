@@ -98,7 +98,14 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   private xrSessionRef: XRSession | null = null;
   /** Latest continuous viewer hit; used with reticle for `createAnchor` on tap. */
   private lastViewerHitResult: XRHitTestResult | null = null;
-  /** Drives `placedGroup` pose every frame so the model stays fixed in the real world. */
+  /**
+   * When set, `updatePlacedGroupFromAnchor` runs each frame.
+   * Disabled: some runtimes return unstable anchor poses so the model appears to slide; hit-matrix placement in
+   * `local-floor` / `local` is sufficient for typical room-scale use.
+   */
+  private static readonly AR_USE_ANCHOR_TRACKING = false;
+
+  /** Drives `placedGroup` pose each frame when {@link AR_USE_ANCHOR_TRACKING} is true. */
   private placementAnchor: XRAnchor | null = null;
   private readonly tmpMatrix = new THREE.Matrix4();
   private readonly tmpScale = new THREE.Vector3();
@@ -118,7 +125,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     location: string,
     message: string,
     data: Record<string, unknown>,
-    runId = 'post-fix'
+    runId = 'post-fix-v2'
   ): void {
     fetch('http://127.0.0.1:7913/ingest/77e9c71a-58dc-48e1-991b-949e089be7ff', {
       method: 'POST',
@@ -234,6 +241,12 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
       }
       const floorGranted = session.enabledFeatures?.includes('local-floor') ?? false;
       this.renderer.xr.setReferenceSpaceType(floorGranted ? 'local-floor' : 'local');
+      // #region agent log
+      this.dbgLog('B', 'viewer.component.ts:startArSession', 'placement mode', {
+        anchorTracking: ViewerComponent.AR_USE_ANCHOR_TRACKING,
+        refSpace: floorGranted ? 'local-floor' : 'local',
+      });
+      // #endregion
       await this.renderer.xr.setSession(session);
 
       this.xrSessionRef = session;
@@ -410,6 +423,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private async tryBindAnchorFromHit(hit: HitResultWithAnchor): Promise<void> {
+    if (!ViewerComponent.AR_USE_ANCHOR_TRACKING) return;
     const create = hit.createAnchor;
     // #region agent log
     this.dbgLog('D', 'viewer.component.ts:tryBindAnchor', 'createAnchor probe', {
@@ -447,6 +461,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         if (pose) {
           this.tmpMatrix.fromArray(pose.transform.matrix);
           this.applyPlacedGroupFromMatrix(this.tmpMatrix);
+          this.clearPlacementAnchor();
           await this.tryBindAnchorFromHit(hit);
         }
         // #region agent log
@@ -475,6 +490,7 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
         if (pose) {
           this.tmpMatrix.fromArray(pose.transform.matrix);
           this.applyPlacedGroupFromMatrix(this.tmpMatrix);
+          this.clearPlacementAnchor();
           await this.tryBindAnchorFromHit(hit as HitResultWithAnchor);
           this.placedGroup.visible = true;
         }
@@ -771,13 +787,9 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
             .then((viewerSpace) => {
               const requestHitTestSource = session.requestHitTestSource;
               if (typeof requestHitTestSource !== 'function') return;
-              const withPlanes = {
-                space: viewerSpace,
-                entityTypes: ['plane' as const],
-              } as NonNullable<Parameters<NonNullable<XRSession['requestHitTestSource']>>[0]>;
-              const hitPromise = requestHitTestSource(withPlanes);
+              const hitPromise = requestHitTestSource({ space: viewerSpace });
               if (!hitPromise) return;
-              return hitPromise.catch(() => requestHitTestSource({ space: viewerSpace }));
+              return hitPromise;
             })
             .then((source) => {
               if (source) this.hitTestSource = source;
@@ -853,7 +865,11 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
           // #endregion
         }
 
-        if (this.placedGroup.visible && this.placementAnchor) {
+        if (
+          ViewerComponent.AR_USE_ANCHOR_TRACKING &&
+          this.placedGroup.visible &&
+          this.placementAnchor
+        ) {
           this.updatePlacedGroupFromAnchor(frame);
         }
       }
