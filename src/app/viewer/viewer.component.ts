@@ -151,6 +151,9 @@ export class ViewerComponent implements OnDestroy {
   private static readonly CARD_MIND_URL =
     'https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.mind';
   private static mindarLoadPromise?: Promise<void>;
+  private static readonly DEBUG_ENDPOINT =
+    'http://127.0.0.1:7913/ingest/77e9c71a-58dc-48e1-991b-949e089be7ff';
+  private static readonly DEBUG_SESSION_ID = '31b045';
 
   @ViewChild('arContainer', { static: true })
   private readonly containerRef!: ElementRef<HTMLDivElement>;
@@ -162,6 +165,7 @@ export class ViewerComponent implements OnDestroy {
   private mindarThree?: MindARThreeInstance;
   private renderer?: WebGLRenderer;
   private modelGroup?: Group;
+  private currentRunId = `run-${Date.now()}`;
 
   async startAr(): Promise<void> {
     if (this.arStarted) {
@@ -169,6 +173,7 @@ export class ViewerComponent implements OnDestroy {
     }
 
     try {
+      this.currentRunId = `run-${Date.now()}`;
       // #region agent log
       this.debugLog('H4_BASE_URI', `baseURI=${document.baseURI}, location=${location.href}`);
       // #endregion
@@ -204,17 +209,38 @@ export class ViewerComponent implements OnDestroy {
       anchor.onTargetFound = () => {
         this.targetVisible = true;
         this.statusText = 'Target detected. Move around the router.';
+        // #region agent log
+        this.debugLog(
+          'H7_TARGET_FOUND',
+          `anchor found; modelLoaded=${!!this.modelGroup}; modelVisible=${this.modelGroup?.visible ?? false}; modelChildren=${this.modelGroup?.children.length ?? 0}`,
+        );
+        // #endregion
       };
       anchor.onTargetLost = () => {
         this.targetVisible = false;
         this.statusText = 'Target lost. Point camera back to the printed card.';
+        // #region agent log
+        this.debugLog('H7_TARGET_LOST', 'anchor lost');
+        // #endregion
       };
 
       await this.loadModel(anchor.group);
+      // #region agent log
+      this.debugLog(
+        'H6_AFTER_LOAD_MODEL',
+        `anchorChildren=${anchor.group.children.length}; modelVisible=${this.modelGroup?.visible ?? false}`,
+      );
+      // #endregion
       await mindarThree.start();
       renderer.setAnimationLoop(() => {
         renderer.render(scene, camera);
       });
+      // #region agent log
+      this.debugLog(
+        'H8_RENDER_LOOP_SET',
+        `rendererCanvas=${renderer.domElement.width}x${renderer.domElement.height}`,
+      );
+      // #endregion
 
       this.arStarted = true;
       this.statusText = 'Point your camera to the printed card target.';
@@ -253,12 +279,24 @@ export class ViewerComponent implements OnDestroy {
     const scale = 0.9 / size;
     model.scale.setScalar(scale);
     model.position.y += 0.2;
+    // #region agent log
+    this.debugLog(
+      'H6_MODEL_BOUNDS',
+      `boxCenter=(${center.x.toFixed(3)},${center.y.toFixed(3)},${center.z.toFixed(3)}); diag=${size.toFixed(6)}; scale=${scale.toFixed(6)}; pos=(${model.position.x.toFixed(3)},${model.position.y.toFixed(3)},${model.position.z.toFixed(3)})`,
+    );
+    // #endregion
 
     const wrapper = new Group();
     wrapper.add(model);
     parent.add(wrapper);
 
     this.modelGroup = wrapper;
+    // #region agent log
+    this.debugLog(
+      'H7_MODEL_ATTACHED',
+      `parentChildren=${parent.children.length}; wrapperChildren=${wrapper.children.length}; wrapperVisible=${wrapper.visible}`,
+    );
+    // #endregion
   }
 
   private ensureMindARLoaded(): Promise<void> {
@@ -335,7 +373,7 @@ export class ViewerComponent implements OnDestroy {
   }
 
   // #region agent log
-  private debugLogs: string[] = [];
+  private readonly debugLogs: string[] = [];
   private debugLog(tag: string, msg: string): void {
     const entry = `[${tag}] ${msg}`;
     this.debugLogs.push(entry);
@@ -348,6 +386,8 @@ export class ViewerComponent implements OnDestroy {
       document.body.appendChild(el);
     }
     el.textContent = this.debugLogs.join('\n');
+    const hypothesisId = tag.includes('_') ? tag.split('_')[0] : tag;
+    fetch(ViewerComponent.DEBUG_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': ViewerComponent.DEBUG_SESSION_ID }, body: JSON.stringify({ sessionId: ViewerComponent.DEBUG_SESSION_ID, runId: this.currentRunId, hypothesisId, location: 'src/app/viewer/viewer.component.ts:debugLog', message: tag, data: { msg }, timestamp: Date.now() }) }).catch(() => {});
   }
   // #endregion
 }
