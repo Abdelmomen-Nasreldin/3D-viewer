@@ -144,8 +144,12 @@ declare global {
   ],
 })
 export class ViewerComponent implements OnDestroy {
+  private static readonly MINDAR_LOCAL_URL = '/mindar-image-three.prod.js';
+  private static readonly MINDAR_CDN_URL =
+    'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
   private static readonly CARD_MIND_URL =
     'https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.mind';
+  private static mindarLoadPromise?: Promise<void>;
 
   @ViewChild('arContainer', { static: true })
   private readonly containerRef!: ElementRef<HTMLDivElement>;
@@ -163,6 +167,9 @@ export class ViewerComponent implements OnDestroy {
       return;
     }
 
+    this.statusText = 'Loading AR engine...';
+    await this.ensureMindARLoaded();
+
     const MindARThreeCtor = window.MINDAR?.IMAGE?.MindARThree;
     if (!MindARThreeCtor) {
       this.statusText = 'MindAR SDK failed to load. Refresh and try again.';
@@ -172,15 +179,16 @@ export class ViewerComponent implements OnDestroy {
     this.statusText = 'Starting camera and image tracking...';
 
     try {
-      this.mindarThree = new MindARThreeCtor({
+      const mindarThree = new MindARThreeCtor({
         container: this.containerRef.nativeElement,
         imageTargetSrc: ViewerComponent.CARD_MIND_URL,
         uiLoading: false,
         uiScanning: false,
         uiError: false,
       });
+      this.mindarThree = mindarThree;
 
-      const { renderer, scene, camera } = this.mindarThree;
+      const { renderer, scene, camera } = mindarThree;
       this.renderer = renderer;
 
       scene.add(new AmbientLight(0xffffff, 1.1));
@@ -188,7 +196,7 @@ export class ViewerComponent implements OnDestroy {
       keyLight.position.set(2.5, 4, 1.5);
       scene.add(keyLight);
 
-      const anchor = this.mindarThree.addAnchor(0);
+      const anchor = mindarThree.addAnchor(0);
       anchor.onTargetFound = () => {
         this.targetVisible = true;
         this.statusText = 'Target detected. Move around the router.';
@@ -199,7 +207,7 @@ export class ViewerComponent implements OnDestroy {
       };
 
       await this.loadModel(anchor.group);
-      await this.mindarThree.start();
+      await mindarThree.start();
       renderer.setAnimationLoop(() => {
         renderer.render(scene, camera);
       });
@@ -247,5 +255,46 @@ export class ViewerComponent implements OnDestroy {
     parent.add(wrapper);
 
     this.modelGroup = wrapper;
+  }
+
+  private ensureMindARLoaded(): Promise<void> {
+    if (window.MINDAR?.IMAGE?.MindARThree) {
+      return Promise.resolve();
+    }
+
+    if (ViewerComponent.mindarLoadPromise) {
+      return ViewerComponent.mindarLoadPromise;
+    }
+
+    ViewerComponent.mindarLoadPromise = this.loadMindARScript(
+      ViewerComponent.MINDAR_LOCAL_URL,
+    ).catch(() => this.loadMindARScript(ViewerComponent.MINDAR_CDN_URL));
+
+    return ViewerComponent.mindarLoadPromise;
+  }
+
+  private loadMindARScript(src: string): Promise<void> {
+    if (window.MINDAR?.IMAGE?.MindARThree) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const existingScript = document.querySelector(`script[data-mindar-src="${src}"]`);
+      if (existingScript) {
+        existingScript.addEventListener('load', () => resolve(), { once: true });
+        existingScript.addEventListener('error', () => reject(new Error('Script load error')), {
+          once: true,
+        });
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = src;
+      script.async = true;
+      script.dataset['mindarSrc'] = src;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error(`Failed to load ${src}`));
+      document.body.appendChild(script);
+    });
   }
 }
