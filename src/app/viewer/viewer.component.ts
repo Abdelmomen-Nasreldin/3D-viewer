@@ -9,11 +9,13 @@ import {
   AmbientLight,
   Box3,
   BoxGeometry,
+  DoubleSide,
   DirectionalLight,
   Camera,
   Group,
   Mesh,
   MeshBasicMaterial,
+  PlaneGeometry,
   Scene,
   Vector3,
   WebGLRenderer,
@@ -147,6 +149,7 @@ declare global {
   ],
 })
 export class ViewerComponent implements OnDestroy {
+  private static readonly DEBUG_BUILD = 'debug-build-2026-04-08T14:20Z';
   private static readonly MINDAR_CDN_URL =
     'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
   private static readonly MINDAR_CDN_FALLBACK_URL =
@@ -169,6 +172,7 @@ export class ViewerComponent implements OnDestroy {
   private renderer?: WebGLRenderer;
   private modelGroup?: Group;
   private debugCube?: Mesh;
+  private debugPlane?: Mesh;
   private currentRunId = `run-${Date.now()}`;
 
   async startAr(): Promise<void> {
@@ -179,6 +183,7 @@ export class ViewerComponent implements OnDestroy {
     try {
       this.currentRunId = `run-${Date.now()}`;
       // #region agent log
+      this.debugLog('H15_BUILD_STAMP', ViewerComponent.DEBUG_BUILD);
       this.debugLog('H4_BASE_URI', `baseURI=${document.baseURI}, location=${location.href}`);
       // #endregion
       this.statusText = 'Loading AR engine...';
@@ -221,7 +226,7 @@ export class ViewerComponent implements OnDestroy {
         this.logMindARDomState('H12_ON_TARGET_FOUND_DOM');
         this.debugLog(
           'H14_CULL_STATE',
-          `wrapperVisible=${this.modelGroup?.visible ?? 'n/a'}; debugVisible=${this.debugCube?.visible ?? 'n/a'}; wrapperPos=(${this.modelGroup?.position.x ?? 0},${this.modelGroup?.position.y ?? 0},${this.modelGroup?.position.z ?? 0}); debugPos=(${this.debugCube?.position.x ?? 0},${this.debugCube?.position.y ?? 0},${this.debugCube?.position.z ?? 0})`,
+          `wrapperVisible=${this.modelGroup?.visible ?? 'n/a'}; debugVisible=${this.debugCube?.visible ?? 'n/a'}; planeVisible=${this.debugPlane?.visible ?? 'n/a'}; wrapperPos=(${this.modelGroup?.position.x ?? 0},${this.modelGroup?.position.y ?? 0},${this.modelGroup?.position.z ?? 0}); debugPos=(${this.debugCube?.position.x ?? 0},${this.debugCube?.position.y ?? 0},${this.debugCube?.position.z ?? 0}); planePos=(${this.debugPlane?.position.x ?? 0},${this.debugPlane?.position.y ?? 0},${this.debugPlane?.position.z ?? 0})`,
         );
         // #endregion
       };
@@ -271,6 +276,7 @@ export class ViewerComponent implements OnDestroy {
     this.containerRef.nativeElement.innerHTML = '';
     this.modelGroup = undefined;
     this.debugCube = undefined;
+    this.debugPlane = undefined;
   }
 
   private async loadModel(parent: Group): Promise<void> {
@@ -323,16 +329,34 @@ export class ViewerComponent implements OnDestroy {
     );
     // #endregion
 
-    const debugGeometry = new BoxGeometry(0.25, 0.25, 0.25);
-    const debugMaterial = new MeshBasicMaterial({ color: 0xff00ff, wireframe: true });
+    const debugGeometry = new BoxGeometry(0.6, 0.6, 0.6);
+    const debugMaterial = new MeshBasicMaterial({ color: 0xff00ff });
     const debugCube = new Mesh(debugGeometry, debugMaterial);
-    debugCube.position.set(0, 0.125, -0.1);
+    debugCube.position.set(0, 0.3, -0.2);
     parent.add(debugCube);
     this.debugCube = debugCube;
     // #region agent log
     this.debugLog(
       'H9_DEBUG_CUBE_ADDED',
       `debugCubePos=(${debugCube.position.x.toFixed(3)},${debugCube.position.y.toFixed(3)},${debugCube.position.z.toFixed(3)})`,
+    );
+    // #endregion
+
+    const debugPlaneGeometry = new PlaneGeometry(1.2, 1.2);
+    const debugPlaneMaterial = new MeshBasicMaterial({
+      color: 0xffff00,
+      side: DoubleSide,
+      transparent: true,
+      opacity: 0.5,
+    });
+    const debugPlane = new Mesh(debugPlaneGeometry, debugPlaneMaterial);
+    debugPlane.position.set(0, 0, -0.22);
+    parent.add(debugPlane);
+    this.debugPlane = debugPlane;
+    // #region agent log
+    this.debugLog(
+      'H16_DEBUG_PLANE_ADDED',
+      `debugPlanePos=(${debugPlane.position.x.toFixed(3)},${debugPlane.position.y.toFixed(3)},${debugPlane.position.z.toFixed(3)})`,
     );
     // #endregion
     // #region agent log
