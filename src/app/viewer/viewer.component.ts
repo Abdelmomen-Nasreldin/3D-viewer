@@ -5,33 +5,17 @@ import {
   ViewChild,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import {
-  AmbientLight,
-  Box3,
-  BoxGeometry,
-  DoubleSide,
-  DirectionalLight,
-  Camera,
-  Group,
-  Mesh,
-  MeshBasicMaterial,
-  PlaneGeometry,
-  Scene,
-  Vector3,
-  WebGLRenderer,
-} from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 interface MindARAnchor {
-  group: Group;
+  group: any;
   onTargetFound?: () => void;
   onTargetLost?: () => void;
 }
 
 interface MindARThreeInstance {
-  renderer: WebGLRenderer;
-  scene: Scene;
-  camera: Camera;
+  renderer: any;
+  scene: any;
+  camera: any;
   addAnchor: (index: number) => MindARAnchor;
   start: () => Promise<void>;
   stop: () => void;
@@ -150,6 +134,9 @@ declare global {
 })
 export class ViewerComponent implements OnDestroy {
   private static readonly DEBUG_BUILD = 'debug-build-2026-04-08T14:20Z';
+  private static readonly THREE_MODULE_URL = 'https://unpkg.com/three@0.160.0/build/three.module.js';
+  private static readonly THREE_GLTF_LOADER_URL =
+    'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
   private static readonly MINDAR_CDN_URL =
     'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
   private static readonly MINDAR_CDN_FALLBACK_URL =
@@ -160,6 +147,9 @@ export class ViewerComponent implements OnDestroy {
   private static readonly DEBUG_ENDPOINT =
     'http://127.0.0.1:7913/ingest/77e9c71a-58dc-48e1-991b-949e089be7ff';
   private static readonly DEBUG_SESSION_ID = '31b045';
+  private static runtimeThreePromise?: Promise<any>;
+  private static runtimeThree?: any;
+  private static runtimeGLTFLoaderCtor?: any;
 
   @ViewChild('arContainer', { static: true })
   private readonly containerRef!: ElementRef<HTMLDivElement>;
@@ -169,10 +159,10 @@ export class ViewerComponent implements OnDestroy {
   statusText = 'Start AR, then point to the printed card target.';
 
   private mindarThree?: MindARThreeInstance;
-  private renderer?: WebGLRenderer;
-  private modelGroup?: Group;
-  private debugCube?: Mesh;
-  private debugPlane?: Mesh;
+  private renderer?: any;
+  private modelGroup?: any;
+  private debugCube?: any;
+  private debugPlane?: any;
   private currentRunId = `run-${Date.now()}`;
 
   async startAr(): Promise<void> {
@@ -188,6 +178,7 @@ export class ViewerComponent implements OnDestroy {
       // #endregion
       this.statusText = 'Loading AR engine...';
       await this.ensureMindARLoaded();
+      await this.ensureThreeRuntimeLoaded();
 
       const MindARThreeCtor = this.browserGlobal.MINDAR?.IMAGE?.MindARThree;
       if (!MindARThreeCtor) {
@@ -209,8 +200,9 @@ export class ViewerComponent implements OnDestroy {
       const { renderer, scene, camera } = mindarThree;
       this.renderer = renderer;
 
-      scene.add(new AmbientLight(0xffffff, 1.1));
-      const keyLight = new DirectionalLight(0xffffff, 1.4);
+      const THREE = ViewerComponent.runtimeThree;
+      scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+      const keyLight = new THREE.DirectionalLight(0xffffff, 1.4);
       keyLight.position.set(2.5, 4, 1.5);
       scene.add(keyLight);
 
@@ -279,22 +271,28 @@ export class ViewerComponent implements OnDestroy {
     this.debugPlane = undefined;
   }
 
-  private async loadModel(parent: Group): Promise<void> {
-    const loader = new GLTFLoader();
+  private async loadModel(parent: any): Promise<void> {
+    const THREE = ViewerComponent.runtimeThree;
+    const GLTFLoaderCtor = ViewerComponent.runtimeGLTFLoaderCtor;
+    if (!THREE || !GLTFLoaderCtor) {
+      throw new Error('Three runtime is not initialized.');
+    }
+
+    const loader = new GLTFLoaderCtor();
     const gltf = await loader.loadAsync('/router.glb');
     const model = gltf.scene;
 
-    model.traverse((obj) => {
+    model.traverse((obj: any) => {
       obj.castShadow = false;
       obj.receiveShadow = false;
     });
 
     // Center model origin to make tap placement predictable.
-    const box = new Box3().setFromObject(model);
-    const center = box.getCenter(new Vector3());
+    const box = new THREE.Box3().setFromObject(model);
+    const center = box.getCenter(new THREE.Vector3());
     model.position.sub(center);
 
-    const size = box.getSize(new Vector3()).length() || 1;
+    const size = box.getSize(new THREE.Vector3()).length() || 1;
     const scale = 0.9 / size;
     model.scale.setScalar(scale);
     model.position.y += 0.2;
@@ -306,7 +304,7 @@ export class ViewerComponent implements OnDestroy {
     );
     // #endregion
 
-    const wrapper = new Group();
+    const wrapper = new THREE.Group();
     wrapper.add(model);
     parent.add(wrapper);
 
@@ -315,12 +313,12 @@ export class ViewerComponent implements OnDestroy {
     // #region agent log
     let meshCount = 0;
     let transparentCount = 0;
-    model.traverse((obj) => {
-      if (obj instanceof Mesh) {
+    model.traverse((obj: any) => {
+      if ((obj as { isMesh?: boolean }).isMesh) {
         meshCount += 1;
-        const mat = obj.material;
+        const mat = (obj as { material: any }).material;
         const mats = Array.isArray(mat) ? mat : [mat];
-        transparentCount += mats.filter((m) => (m as MeshBasicMaterial).transparent).length;
+        transparentCount += mats.filter((m) => Boolean(m?.transparent)).length;
       }
     });
     this.debugLog(
@@ -329,9 +327,9 @@ export class ViewerComponent implements OnDestroy {
     );
     // #endregion
 
-    const debugGeometry = new BoxGeometry(0.6, 0.6, 0.6);
-    const debugMaterial = new MeshBasicMaterial({ color: 0xff00ff });
-    const debugCube = new Mesh(debugGeometry, debugMaterial);
+    const debugGeometry = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+    const debugMaterial = new THREE.MeshBasicMaterial({ color: 0xff00ff });
+    const debugCube = new THREE.Mesh(debugGeometry, debugMaterial);
     debugCube.position.set(0, 0.3, -0.2);
     parent.add(debugCube);
     this.debugCube = debugCube;
@@ -342,14 +340,14 @@ export class ViewerComponent implements OnDestroy {
     );
     // #endregion
 
-    const debugPlaneGeometry = new PlaneGeometry(1.2, 1.2);
-    const debugPlaneMaterial = new MeshBasicMaterial({
+    const debugPlaneGeometry = new THREE.PlaneGeometry(1.2, 1.2);
+    const debugPlaneMaterial = new THREE.MeshBasicMaterial({
       color: 0xffff00,
-      side: DoubleSide,
+      side: THREE.DoubleSide,
       transparent: true,
       opacity: 0.5,
     });
-    const debugPlane = new Mesh(debugPlaneGeometry, debugPlaneMaterial);
+    const debugPlane = new THREE.Mesh(debugPlaneGeometry, debugPlaneMaterial);
     debugPlane.position.set(0, 0, -0.22);
     parent.add(debugPlane);
     this.debugPlane = debugPlane;
@@ -387,6 +385,46 @@ export class ViewerComponent implements OnDestroy {
     );
 
     return ViewerComponent.mindarLoadPromise;
+  }
+
+  private ensureThreeRuntimeLoaded(): Promise<void> {
+    if (ViewerComponent.runtimeThree && ViewerComponent.runtimeGLTFLoaderCtor) {
+      return Promise.resolve();
+    }
+
+    if (ViewerComponent.runtimeThreePromise) {
+      return ViewerComponent.runtimeThreePromise;
+    }
+
+    ViewerComponent.runtimeThreePromise = (async () => {
+      // #region agent log
+      this.debugLog('H18_THREE_IMPORT_ATTEMPT', ViewerComponent.THREE_MODULE_URL);
+      // #endregion
+      const threeModule = await import(/* webpackIgnore: true */ ViewerComponent.THREE_MODULE_URL);
+      // #region agent log
+      this.debugLog('H18_THREE_IMPORT_OK', `keys=${Object.keys(threeModule).length}`);
+      // #endregion
+      const gltfModule = await import(
+        /* webpackIgnore: true */ ViewerComponent.THREE_GLTF_LOADER_URL
+      );
+      // #region agent log
+      this.debugLog(
+        'H18_GLTF_IMPORT_OK',
+        `GLTFLoaderType=${typeof gltfModule.GLTFLoader}`,
+      );
+      // #endregion
+
+      ViewerComponent.runtimeThree = threeModule;
+      ViewerComponent.runtimeGLTFLoaderCtor = gltfModule.GLTFLoader;
+      if (!ViewerComponent.runtimeGLTFLoaderCtor) {
+        throw new Error('GLTFLoader export was not found in runtime module.');
+      }
+    })().catch((error: unknown) => {
+      ViewerComponent.runtimeThreePromise = undefined;
+      throw error;
+    });
+
+    return ViewerComponent.runtimeThreePromise;
   }
 
   private async loadMindARModule(src: string): Promise<void> {
