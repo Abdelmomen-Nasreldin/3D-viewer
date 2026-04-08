@@ -170,6 +170,9 @@ export class ViewerComponent implements OnDestroy {
     }
 
     try {
+      // #region agent log
+      this.debugLog('H4_BASE_URI', `baseURI=${document.baseURI}, location=${location.href}`);
+      // #endregion
       this.statusText = 'Loading AR engine...';
       await this.ensureMindARLoaded();
 
@@ -293,7 +296,20 @@ export class ViewerComponent implements OnDestroy {
     }
 
     const moduleUrl = src.startsWith('http') ? src : new URL(src, document.baseURI).toString();
-    await import(/* webpackIgnore: true */ moduleUrl);
+    // #region agent log
+    this.debugLog('H1_IMPORT_ATTEMPT', `import(${moduleUrl})`);
+    // #endregion
+    try {
+      await import(/* webpackIgnore: true */ moduleUrl);
+      // #region agent log
+      this.debugLog('H1_IMPORT_OK', `import resolved for ${src}, MINDAR exists: ${!!this.browserGlobal.MINDAR}, IMAGE exists: ${!!this.browserGlobal.MINDAR?.IMAGE}, Ctor exists: ${!!this.browserGlobal.MINDAR?.IMAGE?.MindARThree}`);
+      // #endregion
+    } catch (importError: unknown) {
+      // #region agent log
+      this.debugLog('H1_IMPORT_FAILED', `import() threw for ${src}: ${importError instanceof Error ? importError.message : String(importError)}`);
+      // #endregion
+      throw importError;
+    }
     await this.waitForMindARGlobal();
   }
 
@@ -324,4 +340,21 @@ export class ViewerComponent implements OnDestroy {
   private get browserGlobal(): Window {
     return globalThis as unknown as Window;
   }
+
+  // #region agent log
+  private debugLogs: string[] = [];
+  private debugLog(tag: string, msg: string): void {
+    const entry = `[${tag}] ${msg}`;
+    this.debugLogs.push(entry);
+    console.log(`[DEBUG-31b045] ${entry}`);
+    let el = document.getElementById('debug-31b045');
+    if (!el) {
+      el = document.createElement('pre');
+      el.id = 'debug-31b045';
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.85);color:#0f0;font-size:10px;padding:8px;max-height:40vh;overflow:auto;pointer-events:auto;white-space:pre-wrap;word-break:break-all;';
+      document.body.appendChild(el);
+    }
+    el.textContent = this.debugLogs.join('\n');
+  }
+  // #endregion
 }
