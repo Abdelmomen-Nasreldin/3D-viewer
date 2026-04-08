@@ -218,6 +218,11 @@ export class ViewerComponent implements OnDestroy {
           'H7_TARGET_FOUND',
           `anchor found; modelLoaded=${!!this.modelGroup}; modelVisible=${this.modelGroup?.visible ?? false}; modelChildren=${this.modelGroup?.children.length ?? 0}; debugCube=${!!this.debugCube}`,
         );
+        this.logMindARDomState('H12_ON_TARGET_FOUND_DOM');
+        this.debugLog(
+          'H14_CULL_STATE',
+          `wrapperVisible=${this.modelGroup?.visible ?? 'n/a'}; debugVisible=${this.debugCube?.visible ?? 'n/a'}; wrapperPos=(${this.modelGroup?.position.x ?? 0},${this.modelGroup?.position.y ?? 0},${this.modelGroup?.position.z ?? 0}); debugPos=(${this.debugCube?.position.x ?? 0},${this.debugCube?.position.y ?? 0},${this.debugCube?.position.z ?? 0})`,
+        );
         // #endregion
       };
       anchor.onTargetLost = () => {
@@ -236,6 +241,9 @@ export class ViewerComponent implements OnDestroy {
       );
       // #endregion
       await mindarThree.start();
+      // #region agent log
+      this.logMindARDomState('H12_AFTER_START_DOM');
+      // #endregion
       renderer.setAnimationLoop(() => {
         renderer.render(scene, camera);
       });
@@ -409,6 +417,20 @@ export class ViewerComponent implements OnDestroy {
   }
 
   // #region agent log
+  private logMindARDomState(tag: string): void {
+    const container = this.containerRef.nativeElement;
+    const rendererCanvas = this.renderer?.domElement;
+    const video = container.querySelector('video') as HTMLVideoElement | null;
+    const queryCanvas = container.querySelector('canvas') as HTMLCanvasElement | null;
+    const rendererStyle = rendererCanvas ? getComputedStyle(rendererCanvas) : null;
+    const videoStyle = video ? getComputedStyle(video) : null;
+    const containerStyle = getComputedStyle(container);
+    this.debugLog(
+      tag,
+      `children=${container.children.length}; containerPos=${containerStyle.position}; containerZ=${containerStyle.zIndex}; renderer=${!!rendererCanvas}; rendererZ=${rendererStyle?.zIndex ?? 'none'}; rendererDisplay=${rendererStyle?.display ?? 'none'}; rendererOpacity=${rendererStyle?.opacity ?? 'none'}; queryCanvas=${!!queryCanvas}; video=${!!video}; videoZ=${videoStyle?.zIndex ?? 'none'}; videoDisplay=${videoStyle?.display ?? 'none'}; videoOpacity=${videoStyle?.opacity ?? 'none'}`,
+    );
+  }
+
   private readonly debugLogs: string[] = [];
   private debugLog(tag: string, msg: string): void {
     const entry = `[${tag}] ${msg}`;
