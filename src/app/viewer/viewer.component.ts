@@ -1,24 +1,52 @@
 import {
-  AfterViewInit,
   Component,
   ElementRef,
-  HostListener,
   OnDestroy,
   ViewChild,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   AmbientLight,
-  Camera,
   Box3,
   DirectionalLight,
+  Camera,
   Group,
   Scene,
   Vector3,
   WebGLRenderer,
 } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { THREEx } from '@ar-js-org/ar.js-threejs';
+
+interface MindARAnchor {
+  group: Group;
+  onTargetFound?: () => void;
+  onTargetLost?: () => void;
+}
+
+interface MindARThreeInstance {
+  renderer: WebGLRenderer;
+  scene: Scene;
+  camera: Camera;
+  addAnchor: (index: number) => MindARAnchor;
+  start: () => Promise<void>;
+  stop: () => void;
+}
+
+declare global {
+  interface Window {
+    MINDAR?: {
+      IMAGE?: {
+        MindARThree?: new (options: {
+          container: HTMLElement;
+          imageTargetSrc: string;
+          uiScanning?: boolean;
+          uiLoading?: boolean;
+          uiError?: boolean;
+        }) => MindARThreeInstance;
+      };
+    };
+  }
+}
 
 @Component({
   selector: 'app-viewer',
@@ -40,16 +68,16 @@ import { THREEx } from '@ar-js-org/ar.js-threejs';
         </button>
         <p class="status-text">{{ statusText }}</p>
         <p class="hint-text" *ngIf="arStarted && !targetVisible">
-          Point your camera to the marker image.
+          Point your camera to the printed card target.
         </p>
         <p class="hint-text" *ngIf="!arStarted">
-          Print this marker first:
+          Print this target first:
           <a
             class="marker-link"
-            href="https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js-threejs@0.3.2/data/marker-artoolkit-pattern-pattratio-09.png"
+            href="https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.png"
             target="_blank"
             rel="noreferrer"
-            >Open marker image</a
+            >Open printable target</a
           >
         </p>
       </div>
@@ -115,51 +143,69 @@ import { THREEx } from '@ar-js-org/ar.js-threejs';
     `,
   ],
 })
-export class ViewerComponent implements AfterViewInit, OnDestroy {
-  private static readonly CAMERA_PARAMETERS_URL =
-    'https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js-threejs@0.3.2/data/camera_para.dat';
-  private static readonly PATTERN_URL =
-    'https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js-threejs@0.3.2/data/patt.hiro';
+export class ViewerComponent implements OnDestroy {
+  private static readonly CARD_MIND_URL =
+    'https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.mind';
 
   @ViewChild('arContainer', { static: true })
   private readonly containerRef!: ElementRef<HTMLDivElement>;
 
   arStarted = false;
   targetVisible = false;
-  statusText = 'Start AR, then point to the printed marker.';
+  statusText = 'Start AR, then point to the printed card target.';
 
-  private readonly scene = new Scene();
-  private readonly arCamera = new Camera();
+  private mindarThree?: MindARThreeInstance;
   private renderer?: WebGLRenderer;
-  private arToolkitSource?: InstanceType<typeof THREEx.ArToolkitSource>;
-  private arToolkitContext?: InstanceType<typeof THREEx.ArToolkitContext>;
   private modelGroup?: Group;
-  private markerRoot?: Group;
-  private markerControls?: InstanceType<typeof THREEx.ArMarkerControls>;
-  private frameHandle = 0;
-  private wasTargetVisible = false;
-
-  ngAfterViewInit(): void {
-    this.initRenderer();
-  }
 
   async startAr(): Promise<void> {
     if (this.arStarted) {
       return;
     }
 
-    this.statusText = 'Starting camera and marker tracking...';
+    const MindARThreeCtor = window.MINDAR?.IMAGE?.MindARThree;
+    if (!MindARThreeCtor) {
+      this.statusText = 'MindAR SDK failed to load. Refresh and try again.';
+      return;
+    }
+
+    this.statusText = 'Starting camera and image tracking...';
 
     try {
-      this.setupArToolkit();
-      await this.initArToolkitSource();
-      await this.initArToolkitContext();
-      this.createMarkerAnchor();
-      await this.loadModel();
+      this.mindarThree = new MindARThreeCtor({
+        container: this.containerRef.nativeElement,
+        imageTargetSrc: ViewerComponent.CARD_MIND_URL,
+        uiLoading: false,
+        uiScanning: false,
+        uiError: false,
+      });
+
+      const { renderer, scene, camera } = this.mindarThree;
+      this.renderer = renderer;
+
+      scene.add(new AmbientLight(0xffffff, 1.1));
+      const keyLight = new DirectionalLight(0xffffff, 1.4);
+      keyLight.position.set(2.5, 4, 1.5);
+      scene.add(keyLight);
+
+      const anchor = this.mindarThree.addAnchor(0);
+      anchor.onTargetFound = () => {
+        this.targetVisible = true;
+        this.statusText = 'Target detected. Move around the router.';
+      };
+      anchor.onTargetLost = () => {
+        this.targetVisible = false;
+        this.statusText = 'Target lost. Point camera back to the printed card.';
+      };
+
+      await this.loadModel(anchor.group);
+      await this.mindarThree.start();
+      renderer.setAnimationLoop(() => {
+        renderer.render(scene, camera);
+      });
+
       this.arStarted = true;
-      this.statusText = 'Point your camera to the marker image.';
-      this.handleResize();
-      this.animate();
+      this.statusText = 'Point your camera to the printed card target.';
     } catch (error) {
       this.statusText =
         error instanceof Error
@@ -168,29 +214,15 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  @HostListener('window:resize')
-  onResize(): void {
-    this.handleResize();
-  }
-
   ngOnDestroy(): void {
-    if (this.frameHandle) {
-      cancelAnimationFrame(this.frameHandle);
-    }
-
-    this.stopCameraStream();
+    this.renderer?.setAnimationLoop(null);
+    this.mindarThree?.stop();
     this.renderer?.dispose();
+    this.containerRef.nativeElement.innerHTML = '';
     this.modelGroup = undefined;
-    this.markerRoot = undefined;
-    this.markerControls = undefined;
-    this.removeArVideoElement();
   }
 
-  private async loadModel(): Promise<void> {
-    if (!this.markerRoot) {
-      throw new Error('Marker anchor is not initialized.');
-    }
-
+  private async loadModel(parent: Group): Promise<void> {
     const loader = new GLTFLoader();
     const gltf = await loader.loadAsync('/router.glb');
     const model = gltf.scene;
@@ -212,128 +244,8 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
 
     const wrapper = new Group();
     wrapper.add(model);
-    this.markerRoot.add(wrapper);
+    parent.add(wrapper);
 
     this.modelGroup = wrapper;
-  }
-
-  private readonly animate = (): void => {
-    this.frameHandle = requestAnimationFrame(this.animate);
-    if (this.arToolkitSource?.ready) {
-      this.arToolkitContext?.update(this.arToolkitSource.domElement);
-      this.targetVisible = this.markerRoot?.visible ?? false;
-      if (this.targetVisible !== this.wasTargetVisible) {
-        this.statusText = this.targetVisible
-          ? 'Marker detected. Move around the model.'
-          : 'Marker lost. Point camera back to the marker.';
-        this.wasTargetVisible = this.targetVisible;
-      }
-    }
-
-    this.renderer?.render(this.scene, this.arCamera);
-  };
-
-  private initRenderer(): void {
-    this.renderer = new WebGLRenderer({ alpha: true, antialias: true });
-    this.renderer.setClearColor(0x000000, 0);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.domElement.style.position = 'absolute';
-    this.renderer.domElement.style.inset = '0';
-
-    this.containerRef.nativeElement.innerHTML = '';
-    this.containerRef.nativeElement.appendChild(this.renderer.domElement);
-
-    this.scene.add(this.arCamera);
-    this.scene.add(new AmbientLight(0xffffff, 1.1));
-    const keyLight = new DirectionalLight(0xffffff, 1.4);
-    keyLight.position.set(2.5, 4, 1.5);
-    this.scene.add(keyLight);
-  }
-
-  private setupArToolkit(): void {
-    this.arToolkitSource = new THREEx.ArToolkitSource({
-      sourceType: 'webcam',
-      sourceWidth: 1280,
-      sourceHeight: 720,
-      displayWidth: window.innerWidth,
-      displayHeight: window.innerHeight,
-    });
-
-    this.arToolkitContext = new THREEx.ArToolkitContext({
-      cameraParametersUrl: ViewerComponent.CAMERA_PARAMETERS_URL,
-      detectionMode: 'mono',
-      maxDetectionRate: 30,
-    });
-  }
-
-  private initArToolkitSource(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.arToolkitSource?.init(
-        () => resolve(),
-        (error: unknown) =>
-          reject(
-            error instanceof Error ? error : new Error('Failed to initialize camera source.'),
-          ),
-      );
-    });
-  }
-
-  private initArToolkitContext(): Promise<void> {
-    return new Promise((resolve) => {
-      this.arToolkitContext?.init(() => {
-        if (this.arToolkitContext) {
-          this.arCamera.projectionMatrix.copy(this.arToolkitContext.getProjectionMatrix());
-        }
-        resolve();
-      });
-    });
-  }
-
-  private createMarkerAnchor(): void {
-    if (!this.arToolkitContext) {
-      throw new Error('Tracking context is not initialized.');
-    }
-
-    this.markerRoot = new Group();
-    this.scene.add(this.markerRoot);
-
-    this.markerControls = new THREEx.ArMarkerControls(this.arToolkitContext, this.markerRoot, {
-      type: 'pattern',
-      patternUrl: ViewerComponent.PATTERN_URL,
-      changeMatrixMode: 'modelViewMatrix',
-    });
-  }
-
-  private handleResize(): void {
-    this.arToolkitSource?.onResizeElement();
-    if (this.renderer) {
-      this.arToolkitSource?.copyElementSizeTo(this.renderer.domElement);
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      this.renderer.setSize(window.innerWidth, window.innerHeight);
-    }
-
-    if (this.arToolkitContext?.arController !== null) {
-      this.arToolkitSource?.copyElementSizeTo(this.arToolkitContext?.arController?.canvas);
-    }
-  }
-
-  private stopCameraStream(): void {
-    const mediaElement = this.arToolkitSource?.domElement;
-    if (mediaElement instanceof HTMLVideoElement) {
-      const stream = mediaElement.srcObject;
-      if (stream instanceof MediaStream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
-      mediaElement.srcObject = null;
-      mediaElement.pause();
-    }
-  }
-
-  private removeArVideoElement(): void {
-    const arVideo = document.getElementById('arjs-video');
-    if (arVideo) {
-      arVideo.remove();
-    }
   }
 }
