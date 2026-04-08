@@ -8,9 +8,12 @@ import { CommonModule } from '@angular/common';
 import {
   AmbientLight,
   Box3,
+  BoxGeometry,
   DirectionalLight,
   Camera,
   Group,
+  Mesh,
+  MeshBasicMaterial,
   Scene,
   Vector3,
   WebGLRenderer,
@@ -165,6 +168,7 @@ export class ViewerComponent implements OnDestroy {
   private mindarThree?: MindARThreeInstance;
   private renderer?: WebGLRenderer;
   private modelGroup?: Group;
+  private debugCube?: Mesh;
   private currentRunId = `run-${Date.now()}`;
 
   async startAr(): Promise<void> {
@@ -212,7 +216,7 @@ export class ViewerComponent implements OnDestroy {
         // #region agent log
         this.debugLog(
           'H7_TARGET_FOUND',
-          `anchor found; modelLoaded=${!!this.modelGroup}; modelVisible=${this.modelGroup?.visible ?? false}; modelChildren=${this.modelGroup?.children.length ?? 0}`,
+          `anchor found; modelLoaded=${!!this.modelGroup}; modelVisible=${this.modelGroup?.visible ?? false}; modelChildren=${this.modelGroup?.children.length ?? 0}; debugCube=${!!this.debugCube}`,
         );
         // #endregion
       };
@@ -258,6 +262,7 @@ export class ViewerComponent implements OnDestroy {
     this.renderer?.dispose();
     this.containerRef.nativeElement.innerHTML = '';
     this.modelGroup = undefined;
+    this.debugCube = undefined;
   }
 
   private async loadModel(parent: Group): Promise<void> {
@@ -279,6 +284,7 @@ export class ViewerComponent implements OnDestroy {
     const scale = 0.9 / size;
     model.scale.setScalar(scale);
     model.position.y += 0.2;
+    model.position.z -= 0.08;
     // #region agent log
     this.debugLog(
       'H6_MODEL_BOUNDS',
@@ -291,6 +297,36 @@ export class ViewerComponent implements OnDestroy {
     parent.add(wrapper);
 
     this.modelGroup = wrapper;
+
+    // #region agent log
+    let meshCount = 0;
+    let transparentCount = 0;
+    model.traverse((obj) => {
+      if (obj instanceof Mesh) {
+        meshCount += 1;
+        const mat = obj.material;
+        const mats = Array.isArray(mat) ? mat : [mat];
+        transparentCount += mats.filter((m) => (m as MeshBasicMaterial).transparent).length;
+      }
+    });
+    this.debugLog(
+      'H10_MATERIAL_INFO',
+      `meshCount=${meshCount}; transparentMaterialCount=${transparentCount}`,
+    );
+    // #endregion
+
+    const debugGeometry = new BoxGeometry(0.25, 0.25, 0.25);
+    const debugMaterial = new MeshBasicMaterial({ color: 0xff00ff, wireframe: true });
+    const debugCube = new Mesh(debugGeometry, debugMaterial);
+    debugCube.position.set(0, 0.125, -0.1);
+    parent.add(debugCube);
+    this.debugCube = debugCube;
+    // #region agent log
+    this.debugLog(
+      'H9_DEBUG_CUBE_ADDED',
+      `debugCubePos=(${debugCube.position.x.toFixed(3)},${debugCube.position.y.toFixed(3)},${debugCube.position.z.toFixed(3)})`,
+    );
+    // #endregion
     // #region agent log
     this.debugLog(
       'H7_MODEL_ATTACHED',
