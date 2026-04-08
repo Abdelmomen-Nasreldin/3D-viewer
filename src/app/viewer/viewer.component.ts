@@ -144,7 +144,7 @@ declare global {
   ],
 })
 export class ViewerComponent implements OnDestroy {
-  private static readonly MINDAR_LOCAL_URL = '/mindar-image-three.prod.js';
+  private static readonly MINDAR_LOCAL_URL = 'mindar-image-three.prod.js';
   private static readonly MINDAR_CDN_URL =
     'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
   private static readonly CARD_MIND_URL =
@@ -167,18 +167,18 @@ export class ViewerComponent implements OnDestroy {
       return;
     }
 
-    this.statusText = 'Loading AR engine...';
-    await this.ensureMindARLoaded();
-
-    const MindARThreeCtor = window.MINDAR?.IMAGE?.MindARThree;
-    if (!MindARThreeCtor) {
-      this.statusText = 'MindAR SDK failed to load. Refresh and try again.';
-      return;
-    }
-
-    this.statusText = 'Starting camera and image tracking...';
-
     try {
+      this.statusText = 'Loading AR engine...';
+      await this.ensureMindARLoaded();
+
+      const MindARThreeCtor = this.browserGlobal.MINDAR?.IMAGE?.MindARThree;
+      if (!MindARThreeCtor) {
+        this.statusText = 'MindAR SDK loaded but constructor is missing.';
+        return;
+      }
+
+      this.statusText = 'Starting camera and image tracking...';
+
       const mindarThree = new MindARThreeCtor({
         container: this.containerRef.nativeElement,
         imageTargetSrc: ViewerComponent.CARD_MIND_URL,
@@ -258,7 +258,7 @@ export class ViewerComponent implements OnDestroy {
   }
 
   private ensureMindARLoaded(): Promise<void> {
-    if (window.MINDAR?.IMAGE?.MindARThree) {
+    if (this.browserGlobal.MINDAR?.IMAGE?.MindARThree) {
       return Promise.resolve();
     }
 
@@ -268,33 +268,81 @@ export class ViewerComponent implements OnDestroy {
 
     ViewerComponent.mindarLoadPromise = this.loadMindARScript(
       ViewerComponent.MINDAR_LOCAL_URL,
-    ).catch(() => this.loadMindARScript(ViewerComponent.MINDAR_CDN_URL));
+    ).catch((localError) =>
+      this.loadMindARScript(ViewerComponent.MINDAR_CDN_URL).catch((cdnError) => {
+        throw new Error(
+          `MindAR load failed (local+cdn): ${this.getErrorMessage(localError)} | ${this.getErrorMessage(cdnError)}`,
+        );
+      }),
+    );
 
     return ViewerComponent.mindarLoadPromise;
   }
 
   private loadMindARScript(src: string): Promise<void> {
-    if (window.MINDAR?.IMAGE?.MindARThree) {
+    if (this.browserGlobal.MINDAR?.IMAGE?.MindARThree) {
       return Promise.resolve();
     }
 
     return new Promise((resolve, reject) => {
-      const existingScript = document.querySelector(`script[data-mindar-src="${src}"]`);
+      const existingScript = document.querySelector(
+        `script[data-mindar-src="${src}"], script[src$="${src}"]`,
+      ) as HTMLScriptElement | null;
       if (existingScript) {
-        existingScript.addEventListener('load', () => resolve(), { once: true });
-        existingScript.addEventListener('error', () => reject(new Error('Script load error')), {
-          once: true,
-        });
+        this.waitForMindARGlobal()
+          .then(() => resolve())
+          .catch(() => {
+            existingScript.addEventListener('load', () => {
+              this.waitForMindARGlobal().then(resolve).catch(reject);
+            });
+            existingScript.addEventListener(
+              'error',
+              () => reject(new Error(`Script load error (${src})`)),
+              {
+                once: true,
+              },
+            );
+          });
         return;
       }
 
       const script = document.createElement('script');
-      script.src = src;
+      script.src = src.startsWith('http') ? src : new URL(src, document.baseURI).toString();
       script.async = true;
       script.dataset['mindarSrc'] = src;
-      script.onload = () => resolve();
+      script.onload = () => {
+        this.waitForMindARGlobal().then(resolve).catch(reject);
+      };
       script.onerror = () => reject(new Error(`Failed to load ${src}`));
       document.body.appendChild(script);
     });
+  }
+
+  private waitForMindARGlobal(timeoutMs = 4000): Promise<void> {
+    const startedAt = Date.now();
+    return new Promise((resolve, reject) => {
+      const check = (): void => {
+        if (this.browserGlobal.MINDAR?.IMAGE?.MindARThree) {
+          resolve();
+          return;
+        }
+
+        if (Date.now() - startedAt > timeoutMs) {
+          reject(new Error('MindAR global was not initialized in time.'));
+          return;
+        }
+
+        setTimeout(check, 50);
+      };
+      check();
+    });
+  }
+
+  private getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : 'unknown error';
+  }
+
+  private get browserGlobal(): Window {
+    return globalThis as unknown as Window;
   }
 }
