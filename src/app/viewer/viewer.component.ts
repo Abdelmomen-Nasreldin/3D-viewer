@@ -144,7 +144,6 @@ declare global {
   ],
 })
 export class ViewerComponent implements OnDestroy {
-  private static readonly MINDAR_LOCAL_URL = '/mindar-image-three.prod.js';
   private static readonly MINDAR_CDN_URL =
     'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
   private static readonly MINDAR_CDN_FALLBACK_URL =
@@ -272,17 +271,11 @@ export class ViewerComponent implements OnDestroy {
     }
 
     ViewerComponent.mindarLoadPromise = this.loadMindARModule(
-      ViewerComponent.MINDAR_LOCAL_URL,
-    ).catch((localError) =>
-      this.loadMindARModule(ViewerComponent.MINDAR_CDN_URL).catch((cdnError) =>
-        this.loadMindARModule(ViewerComponent.MINDAR_CDN_FALLBACK_URL).catch((fallbackError) => {
-          throw new Error(
-            `MindAR load failed (local+cdn+fallback): ${this.getErrorMessage(localError)} | ${this.getErrorMessage(cdnError)} | ${this.getErrorMessage(fallbackError)}`,
-          );
-        }),
-      ).catch((cdnChainError) => {
+      ViewerComponent.MINDAR_CDN_URL,
+    ).catch((cdnError) =>
+      this.loadMindARModule(ViewerComponent.MINDAR_CDN_FALLBACK_URL).catch((fallbackError) => {
         throw new Error(
-          `MindAR load failed (local+cdn): ${this.getErrorMessage(localError)} | ${this.getErrorMessage(cdnChainError)}`,
+          `MindAR load failed: jsdelivr=${this.getErrorMessage(cdnError)} | unpkg=${this.getErrorMessage(fallbackError)}`,
         );
       }),
     );
