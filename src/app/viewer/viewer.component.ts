@@ -292,15 +292,16 @@ export class ViewerComponent implements OnDestroy {
     const center = box.getCenter(new THREE.Vector3());
     model.position.sub(center);
 
-    const size = box.getSize(new THREE.Vector3()).length() || 1;
-    const scale = 0.9 / size;
+    const sizeVec = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z) || 1;
+    const scale = 1.2 / maxDim;
     model.scale.setScalar(scale);
-    model.position.y += 0.2;
-    model.position.z -= 0.08;
+    model.position.y += 0.03;
+    model.position.z -= 0.03;
     // #region agent log
     this.debugLog(
       'H6_MODEL_BOUNDS',
-      `boxCenter=(${center.x.toFixed(3)},${center.y.toFixed(3)},${center.z.toFixed(3)}); diag=${size.toFixed(6)}; scale=${scale.toFixed(6)}; pos=(${model.position.x.toFixed(3)},${model.position.y.toFixed(3)},${model.position.z.toFixed(3)})`,
+      `boxCenter=(${center.x.toFixed(3)},${center.y.toFixed(3)},${center.z.toFixed(3)}); size=(${sizeVec.x.toFixed(3)},${sizeVec.y.toFixed(3)},${sizeVec.z.toFixed(3)}); maxDim=${maxDim.toFixed(6)}; scale=${scale.toFixed(6)}; pos=(${model.position.x.toFixed(3)},${model.position.y.toFixed(3)},${model.position.z.toFixed(3)})`,
     );
     // #endregion
 
@@ -327,10 +328,10 @@ export class ViewerComponent implements OnDestroy {
     );
     // #endregion
 
-    const debugGeometry = new THREE.BoxGeometry(0.6, 0.6, 0.6);
-    const debugMaterial = new THREE.MeshBasicMaterial({ color: 0xff00ff });
+    const debugGeometry = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+    const debugMaterial = new THREE.MeshBasicMaterial({ color: 0xff00ff, transparent: true, opacity: 0.7 });
     const debugCube = new THREE.Mesh(debugGeometry, debugMaterial);
-    debugCube.position.set(0, 0.3, -0.2);
+    debugCube.position.set(0.38, 0.06, -0.16);
     parent.add(debugCube);
     this.debugCube = debugCube;
     // #region agent log
@@ -340,15 +341,15 @@ export class ViewerComponent implements OnDestroy {
     );
     // #endregion
 
-    const debugPlaneGeometry = new THREE.PlaneGeometry(1.2, 1.2);
+    const debugPlaneGeometry = new THREE.PlaneGeometry(0.16, 0.16);
     const debugPlaneMaterial = new THREE.MeshBasicMaterial({
       color: 0xffff00,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.35,
     });
     const debugPlane = new THREE.Mesh(debugPlaneGeometry, debugPlaneMaterial);
-    debugPlane.position.set(0, 0, -0.22);
+    debugPlane.position.set(0.38, 0, -0.16);
     parent.add(debugPlane);
     this.debugPlane = debugPlane;
     // #region agent log
