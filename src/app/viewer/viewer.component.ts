@@ -41,6 +41,14 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
         >
           Start AR
         </button>
+        <button
+          type="button"
+          class="reset-btn"
+          (click)="resetPlacement()"
+          *ngIf="arStarted && modelPlaced"
+        >
+          Reset placement
+        </button>
         <p class="status-text">{{ statusText }}</p>
         <p class="hint-text" *ngIf="arStarted && modelLoaded && !modelPlaced">
           Tap anywhere to place the router model.
@@ -101,6 +109,17 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
         font-weight: 600;
         color: #0a192f;
         background: #7dd3fc;
+      }
+
+      .reset-btn {
+        margin-top: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        border-radius: 10px;
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #fff;
+        background: rgba(10, 25, 47, 0.6);
       }
 
       .status-text,
@@ -190,6 +209,16 @@ export class ViewerComponent implements AfterViewInit, OnDestroy {
     this.modelGroup.visible = true;
     this.modelPlaced = true;
     this.statusText = 'Router placed.';
+  }
+
+  resetPlacement(): void {
+    if (!this.modelGroup || !this.modelPlaced) {
+      return;
+    }
+
+    this.modelGroup.visible = false;
+    this.modelPlaced = false;
+    this.statusText = 'Tap anywhere to place the router model.';
   }
 
   @HostListener('window:resize')
