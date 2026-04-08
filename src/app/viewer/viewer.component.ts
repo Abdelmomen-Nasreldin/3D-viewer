@@ -1,261 +1,333 @@
 import {
+  AfterViewInit,
   Component,
   ElementRef,
-  AfterViewInit,
+  HostListener,
   OnDestroy,
   ViewChild,
-  NgZone,
 } from '@angular/core';
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { CommonModule } from '@angular/common';
 import {
-  CSS2DRenderer,
-  CSS2DObject,
-} from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { Annotation } from '../services/annotation.model';
-
-/**
- * Hardcoded annotations for the Vodafone router.
- *
- * Positions are estimated for a typical router shape. Fine-tune them:
- *   1. Place your router.glb in the public/ folder and run `ng serve`
- *   2. Click anywhere on the model -- the 3D point is logged to the browser console
- *   3. Copy the logged [x, y, z] values into the position tuples below
- */
-const ROUTER_ANNOTATIONS: Annotation[] = [
-  // Front panel
-  { id: 'power-led',       position: [-0.90,  0.25,  0.75], text: 'Power LED — Solid green = powered on' },
-  { id: 'internet-led',    position: [-0.55,  0.25,  0.75], text: 'Internet LED — Green = connected, Red = no signal' },
-  { id: 'wifi-led',        position: [-0.20,  0.25,  0.75], text: 'Wi-Fi LED — Blinking = active traffic' },
-  { id: 'phone-led',       position: [ 0.15,  0.25,  0.75], text: 'Phone LED — Green = VoIP registered' },
-  { id: 'vodafone-logo',   position: [ 0.70,  0.25,  0.75], text: 'Vodafone Branding' },
-
-  // Back panel (ports & buttons)
-  { id: 'power-port',      position: [-1.10,  0.15, -0.75], text: 'DC Power Input — 12V adapter' },
-  { id: 'power-switch',    position: [-0.85,  0.15, -0.75], text: 'Power On/Off Switch' },
-  { id: 'dsl-port',        position: [-0.50,  0.10, -0.75], text: 'DSL/Fibre WAN Port — Connect to wall socket' },
-  { id: 'eth-1',           position: [-0.10,  0.10, -0.75], text: 'LAN Port 1 (Gigabit Ethernet)' },
-  { id: 'eth-2',           position: [ 0.20,  0.10, -0.75], text: 'LAN Port 2 (Gigabit Ethernet)' },
-  { id: 'eth-3',           position: [ 0.50,  0.10, -0.75], text: 'LAN Port 3 (Gigabit Ethernet)' },
-  { id: 'eth-4',           position: [ 0.80,  0.10, -0.75], text: 'LAN Port 4 (Gigabit Ethernet)' },
-  { id: 'phone-port',      position: [ 1.05,  0.10, -0.75], text: 'Phone Port (RJ11) — Analogue handset' },
-  { id: 'usb-port',        position: [ 1.30,  0.15, -0.75], text: 'USB Port — Storage / printer sharing' },
-
-  // Side / top buttons
-  { id: 'wps-button',      position: [ 1.40,  0.25,  0.00], text: 'WPS Button — Press to pair devices' },
-  { id: 'reset-button',    position: [-1.40,  0.10, -0.20], text: 'Reset Pinhole — Hold 10s to factory reset' },
-
-  // Top
-  { id: 'ventilation',     position: [ 0.00,  0.50,  0.00], text: 'Ventilation — Keep clear for airflow' },
-];
+  AmbientLight,
+  Box3,
+  DirectionalLight,
+  Euler,
+  Group,
+  MathUtils,
+  PerspectiveCamera,
+  Quaternion,
+  Scene,
+  Vector3,
+  WebGLRenderer,
+} from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 @Component({
   selector: 'app-viewer',
   standalone: true,
-  template: `<div #rendererContainer class="viewer-container"></div>`,
+  imports: [CommonModule],
+  template: `
+    <div class="viewer-shell">
+      <video #cameraFeed class="camera-feed" autoplay playsinline muted></video>
+      <canvas #arCanvas class="ar-canvas" (click)="onCanvasTap()"></canvas>
+
+      <div class="overlay-panel" *ngIf="!arStarted || !!statusText || modelPlaced">
+        <button
+          type="button"
+          class="start-btn"
+          (click)="startAr()"
+          [disabled]="arStarted && modelLoaded"
+          *ngIf="!arStarted"
+        >
+          Start AR
+        </button>
+        <p class="status-text">{{ statusText }}</p>
+        <p class="hint-text" *ngIf="arStarted && modelLoaded && !modelPlaced">
+          Tap anywhere to place the router model.
+        </p>
+      </div>
+    </div>
+  `,
   styles: [
     `
-      :host {
+      :host,
+      .viewer-shell {
         display: block;
+        position: fixed;
+        inset: 0;
         width: 100%;
         height: 100%;
       }
-      .viewer-container {
+
+      .camera-feed,
+      .ar-canvas {
+        position: absolute;
+        inset: 0;
         width: 100%;
         height: 100%;
-        position: relative;
-        overflow: hidden;
+      }
+
+      .camera-feed {
+        object-fit: cover;
+        background: #000;
+      }
+
+      .ar-canvas {
+        touch-action: manipulation;
+      }
+
+      .overlay-panel {
+        position: absolute;
+        left: 50%;
+        bottom: 20px;
+        transform: translateX(-50%);
+        z-index: 20;
+        min-width: 220px;
+        max-width: calc(100% - 24px);
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: rgba(10, 25, 47, 0.78);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        backdrop-filter: blur(6px);
+        color: #fff;
+        text-align: center;
+      }
+
+      .start-btn {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-size: 14px;
+        font-weight: 600;
+        color: #0a192f;
+        background: #7dd3fc;
+      }
+
+      .status-text,
+      .hint-text {
+        margin: 8px 0 0;
+        font-size: 13px;
+        line-height: 1.35;
       }
     `,
   ],
 })
 export class ViewerComponent implements AfterViewInit, OnDestroy {
-  @ViewChild('rendererContainer', { static: true })
-  containerRef!: ElementRef<HTMLDivElement>;
+  @ViewChild('cameraFeed', { static: true })
+  private readonly cameraFeedRef!: ElementRef<HTMLVideoElement>;
 
-  private renderer!: THREE.WebGLRenderer;
-  private css2DRenderer!: CSS2DRenderer;
-  private scene!: THREE.Scene;
-  private camera!: THREE.PerspectiveCamera;
-  private controls!: OrbitControls;
-  private animationId = 0;
-  private resizeObserver!: ResizeObserver;
-  private raycaster = new THREE.Raycaster();
-  private mouse = new THREE.Vector2();
-  private model: THREE.Group | null = null;
+  @ViewChild('arCanvas', { static: true })
+  private readonly canvasRef!: ElementRef<HTMLCanvasElement>;
 
-  constructor(private zone: NgZone) {}
+  arStarted = false;
+  modelLoaded = false;
+  modelPlaced = false;
+  statusText = 'Start AR to allow camera access.';
+
+  private readonly scene = new Scene();
+  private readonly camera = new PerspectiveCamera(60, 1, 0.01, 100);
+  private renderer?: WebGLRenderer;
+  private modelGroup?: Group;
+  private stream?: MediaStream;
+  private frameHandle = 0;
+  private orientationReady = false;
+  private alphaDeg = 0;
+  private betaDeg = 0;
+  private gammaDeg = 0;
+  private readonly worldUp = new Vector3(0, 1, 0);
+  private readonly cameraForward = new Vector3();
+  private readonly modelPosition = new Vector3();
+  private readonly euler = new Euler();
+  private readonly q0 = new Quaternion();
+  private readonly q1 = new Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+  private readonly zee = new Vector3(0, 0, 1);
+  private readonly onOrientationEvent = (event: DeviceOrientationEvent): void => {
+    this.alphaDeg = event.alpha ?? 0;
+    this.betaDeg = event.beta ?? 0;
+    this.gammaDeg = event.gamma ?? 0;
+    this.orientationReady = true;
+  };
 
   ngAfterViewInit(): void {
     this.initScene();
-    this.initRenderers();
-    this.initLights();
-    this.initControls();
-    this.initDevClickLogger();
-    this.loadModel();
-    this.zone.runOutsideAngular(() => this.animate());
+    this.onResize();
+    this.animate();
   }
 
-  ngOnDestroy(): void {
-    cancelAnimationFrame(this.animationId);
-    this.resizeObserver?.disconnect();
-    this.controls?.dispose();
-    this.renderer?.dispose();
-    this.css2DRenderer?.domElement.remove();
-  }
+  async startAr(): Promise<void> {
+    if (this.arStarted) {
+      return;
+    }
 
-  private initScene(): void {
-    this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x1a1a2e);
+    this.statusText = 'Requesting permissions...';
 
-    const container = this.containerRef.nativeElement;
-    const w = container.clientWidth || 1;
-    const h = container.clientHeight || 1;
-
-    this.camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 1000);
-    this.camera.position.set(0, 2, 5);
-  }
-
-  private initRenderers(): void {
-    const container = this.containerRef.nativeElement;
-    const w = container.clientWidth || 1;
-    const h = container.clientHeight || 1;
-
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(window.devicePixelRatio);
-    this.renderer.setSize(w, h);
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1;
-    container.appendChild(this.renderer.domElement);
-
-    this.css2DRenderer = new CSS2DRenderer();
-    this.css2DRenderer.setSize(w, h);
-    this.css2DRenderer.domElement.style.position = 'absolute';
-    this.css2DRenderer.domElement.style.top = '0';
-    this.css2DRenderer.domElement.style.left = '0';
-    this.css2DRenderer.domElement.style.pointerEvents = 'none';
-    container.appendChild(this.css2DRenderer.domElement);
-
-    this.resizeObserver = new ResizeObserver(() => this.onResize());
-    this.resizeObserver.observe(container);
-  }
-
-  private initLights(): void {
-    const ambient = new THREE.AmbientLight('#ffffff', 0.6);
-    this.scene.add(ambient);
-
-    const dir = new THREE.DirectionalLight('#ffffff', 0.8);
-    dir.position.set(5, 10, 7);
-    dir.castShadow = true;
-    this.scene.add(dir);
-
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    pmrem.compileEquirectangularShader();
-    const envTexture = pmrem.fromScene(new THREE.Scene(), 0, 0.1, 100);
-    this.scene.environment = envTexture.texture;
-    pmrem.dispose();
-  }
-
-  private initControls(): void {
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.08;
-    this.controls.minDistance = 0.5;
-    this.controls.maxDistance = 50;
-  }
-
-  /** Logs the 3D click position to the console so you can find annotation coordinates. */
-  private initDevClickLogger(): void {
-    this.renderer.domElement.addEventListener('click', (event: MouseEvent) => {
-      if (!this.model) return;
-
-      const rect = this.renderer.domElement.getBoundingClientRect();
-      this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-      this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
-      this.raycaster.setFromCamera(this.mouse, this.camera);
-      const hits = this.raycaster.intersectObject(this.model, true);
-
-      if (hits.length > 0) {
-        const p = hits[0].point;
-        console.log(
-          `Annotation point: [${p.x.toFixed(4)}, ${p.y.toFixed(4)}, ${p.z.toFixed(4)}]`
-        );
-      }
-    });
-  }
-
-  private loadModel(): void {
-    const loader = new GLTFLoader();
-    loader.load(
-      'router.glb',
-      (gltf) => {
-        this.model = gltf.scene;
-
-        const box = new THREE.Box3().setFromObject(this.model);
-        const center = box.getCenter(new THREE.Vector3());
-        const size = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z);
-        const scale = 3 / maxDim;
-
-        this.model.scale.setScalar(scale);
-        this.model.position.sub(center.multiplyScalar(scale));
-
-        this.scene.add(this.model);
-
-        this.camera.position.set(2.5, 2, 5);
-        this.controls.target.set(0, 0, 0);
-        this.controls.update();
-
-        this.placeAnnotations();
-      },
-      undefined,
-      (error) => console.error('Error loading router.glb:', error)
-    );
-  }
-
-  private placeAnnotations(): void {
-    for (const ann of ROUTER_ANNOTATIONS) {
-      const [x, y, z] = ann.position;
-      if (x === 0 && y === 0 && z === 0) continue;
-
-      const wrapper = document.createElement('div');
-      wrapper.className = 'annotation-label';
-      wrapper.innerHTML = `
-        <span class="annotation-dot-connector"></span>
-        <span class="annotation-text">${ann.text}</span>
-      `;
-
-      const label = new CSS2DObject(wrapper);
-      label.position.set(x, y, z);
-      this.scene.add(label);
-
-      const dot = new THREE.Mesh(
-        new THREE.SphereGeometry(0.03, 16, 16),
-        new THREE.MeshBasicMaterial({ color: 0x00d4ff })
-      );
-      dot.position.set(x, y, z);
-      this.scene.add(dot);
+    try {
+      await this.requestOrientationPermission();
+      await this.startCamera();
+      await this.loadModel();
+      this.bindOrientationListener();
+      this.arStarted = true;
+      this.statusText = 'Move your phone, then tap to place the model.';
+    } catch (error) {
+      this.statusText =
+        error instanceof Error
+          ? error.message
+          : 'AR start failed. Please allow camera and motion access.';
     }
   }
 
-  private onResize(): void {
-    const container = this.containerRef.nativeElement;
-    const w = container.clientWidth;
-    const h = container.clientHeight;
-    if (w === 0 || h === 0) return;
+  onCanvasTap(): void {
+    if (!this.arStarted || !this.modelGroup || this.modelPlaced) {
+      return;
+    }
 
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
-    this.css2DRenderer.setSize(w, h);
+    this.camera.getWorldDirection(this.cameraForward);
+    this.modelPosition.copy(this.camera.position);
+    this.modelPosition.add(this.cameraForward.multiplyScalar(1.2));
+    this.modelPosition.y -= 0.4;
+
+    this.modelGroup.position.copy(this.modelPosition);
+    this.modelGroup.visible = true;
+    this.modelPlaced = true;
+    this.statusText = 'Router placed.';
   }
 
-  private animate(): void {
-    this.animationId = requestAnimationFrame(() => this.animate());
-    this.controls.update();
-    this.renderer.render(this.scene, this.camera);
-    this.css2DRenderer.render(this.scene, this.camera);
+  @HostListener('window:resize')
+  onResize(): void {
+    const canvas = this.canvasRef.nativeElement;
+    const width = canvas.clientWidth || window.innerWidth;
+    const height = canvas.clientHeight || window.innerHeight;
+
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+    this.renderer?.setSize(width, height, false);
+    this.renderer?.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  }
+
+  ngOnDestroy(): void {
+    if (this.frameHandle) {
+      cancelAnimationFrame(this.frameHandle);
+    }
+
+    globalThis.removeEventListener('deviceorientation', this.onOrientationEvent);
+    this.stopCamera();
+    this.renderer?.dispose();
+    this.modelGroup = undefined;
+  }
+
+  private initScene(): void {
+    const canvas = this.canvasRef.nativeElement;
+    this.renderer = new WebGLRenderer({ canvas, alpha: true, antialias: true });
+    this.renderer.setClearColor(0x000000, 0);
+
+    this.camera.position.set(0, 1.45, 0);
+    this.scene.add(new AmbientLight(0xffffff, 1.2));
+    const keyLight = new DirectionalLight(0xffffff, 1.5);
+    keyLight.position.set(3, 4, 2);
+    this.scene.add(keyLight);
+  }
+
+  private async startCamera(): Promise<void> {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera API is not available in this WebView.');
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' },
+      },
+    });
+
+    this.stream = stream;
+    const cameraFeed = this.cameraFeedRef.nativeElement;
+    cameraFeed.srcObject = stream;
+    await cameraFeed.play();
+  }
+
+  private stopCamera(): void {
+    this.stream?.getTracks().forEach((track) => track.stop());
+    this.stream = undefined;
+    this.cameraFeedRef.nativeElement.srcObject = null;
+  }
+
+  private async loadModel(): Promise<void> {
+    const loader = new GLTFLoader();
+    const gltf = await loader.loadAsync('/router.glb');
+    const model = gltf.scene;
+
+    model.traverse((obj) => {
+      obj.castShadow = false;
+      obj.receiveShadow = false;
+    });
+
+    // Center model origin to make tap placement predictable.
+    const box = new Box3().setFromObject(model);
+    const center = box.getCenter(new Vector3());
+    model.position.sub(center);
+
+    const size = box.getSize(new Vector3()).length() || 1;
+    const scale = 0.85 / size;
+    model.scale.setScalar(scale);
+
+    const wrapper = new Group();
+    wrapper.visible = false;
+    wrapper.add(model);
+    this.scene.add(wrapper);
+
+    this.modelGroup = wrapper;
+    this.modelLoaded = true;
+  }
+
+  private bindOrientationListener(): void {
+    globalThis.removeEventListener('deviceorientation', this.onOrientationEvent);
+    globalThis.addEventListener('deviceorientation', this.onOrientationEvent, true);
+  }
+
+  private async requestOrientationPermission(): Promise<void> {
+    type IOSPermissionEvent = typeof DeviceOrientationEvent & {
+      requestPermission?: () => Promise<'granted' | 'denied'>;
+    };
+
+    const orientationEvent = DeviceOrientationEvent as IOSPermissionEvent;
+    if (typeof orientationEvent.requestPermission !== 'function') {
+      return;
+    }
+
+    const permission = await orientationEvent.requestPermission();
+    if (permission !== 'granted') {
+      throw new Error('Motion permission denied.');
+    }
+  }
+
+  private readonly animate = (): void => {
+    this.frameHandle = requestAnimationFrame(this.animate);
+    this.updateCameraFromOrientation();
+    this.renderer?.render(this.scene, this.camera);
+  };
+
+  private updateCameraFromOrientation(): void {
+    if (!this.orientationReady) {
+      return;
+    }
+
+    const alpha = MathUtils.degToRad(this.alphaDeg);
+    const beta = MathUtils.degToRad(this.betaDeg);
+    const gamma = MathUtils.degToRad(this.gammaDeg);
+    const orient = MathUtils.degToRad(this.getScreenAngle());
+
+    this.euler.set(beta, alpha, -gamma, 'YXZ');
+    this.camera.quaternion.setFromEuler(this.euler);
+    this.camera.quaternion.multiply(this.q1);
+    this.camera.quaternion.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+    this.camera.up.copy(this.worldUp);
+  }
+
+  private getScreenAngle(): number {
+    if (screen.orientation && typeof screen.orientation.angle === 'number') {
+      return screen.orientation.angle;
+    }
+
+    return 0;
   }
 }
