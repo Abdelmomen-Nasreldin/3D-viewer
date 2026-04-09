@@ -45,13 +45,13 @@ declare global {
         </button>
         <p class="status-text">{{ statusText }}</p>
         <p class="hint-text" *ngIf="arStarted && !targetVisible">
-          Point your camera to the printed card target.
+          Point your camera to the printed logo target.
         </p>
         <p class="hint-text" *ngIf="!arStarted">
           Print this target first:
           <a
             class="marker-link"
-            href="https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.png"
+            [href]="printableTargetUrl"
             target="_blank"
             rel="noreferrer"
             >Open printable target</a
@@ -123,8 +123,7 @@ export class ViewerComponent implements OnDestroy {
     'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
   private static readonly MINDAR_CDN_FALLBACK_URL =
     'https://unpkg.com/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
-  private static readonly CARD_MIND_URL =
-    'https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.mind';
+  private static readonly TARGET_MIND_URL = '/logo.mind';
   private static mindarLoadPromise?: Promise<void>;
   private static runtimeThreePromise?: Promise<any>;
   private static runtimeThree?: any;
@@ -135,7 +134,8 @@ export class ViewerComponent implements OnDestroy {
 
   arStarted = false;
   targetVisible = false;
-  statusText = 'Start AR, then point to the printed card target.';
+  statusText = 'Start AR, then point to the printed logo target.';
+  readonly printableTargetUrl = '/logo.jpg';
 
   private mindarThree?: MindARThreeInstance;
   private renderer?: any;
@@ -150,6 +150,7 @@ export class ViewerComponent implements OnDestroy {
       this.statusText = 'Loading AR engine...';
       await this.ensureMindARLoaded();
       await this.ensureThreeRuntimeLoaded();
+      await this.assertMindTargetExists();
 
       const MindARThreeCtor = this.browserGlobal.MINDAR?.IMAGE?.MindARThree;
       if (!MindARThreeCtor) {
@@ -161,7 +162,7 @@ export class ViewerComponent implements OnDestroy {
 
       const mindarThree = new MindARThreeCtor({
         container: this.containerRef.nativeElement,
-        imageTargetSrc: ViewerComponent.CARD_MIND_URL,
+        imageTargetSrc: ViewerComponent.TARGET_MIND_URL,
         uiLoading: false,
         uiScanning: false,
         uiError: false,
@@ -184,7 +185,7 @@ export class ViewerComponent implements OnDestroy {
       };
       anchor.onTargetLost = () => {
         this.targetVisible = false;
-        this.statusText = 'Target lost. Point camera back to the printed card.';
+        this.statusText = 'Target lost. Point camera back to the printed logo.';
       };
 
       await this.loadModel(anchor.group);
@@ -192,7 +193,7 @@ export class ViewerComponent implements OnDestroy {
       renderer.setAnimationLoop(() => renderer.render(scene, camera));
 
       this.arStarted = true;
-      this.statusText = 'Point your camera to the printed card target.';
+      this.statusText = 'Point your camera to the printed logo target.';
     } catch (error) {
       this.statusText =
         error instanceof Error
@@ -298,6 +299,18 @@ export class ViewerComponent implements OnDestroy {
     const moduleUrl = src.startsWith('http') ? src : new URL(src, document.baseURI).toString();
     await import(/* webpackIgnore: true */ moduleUrl);
     await this.waitForMindARGlobal();
+  }
+
+  private async assertMindTargetExists(): Promise<void> {
+    const response = await fetch(ViewerComponent.TARGET_MIND_URL, {
+      method: 'GET',
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      throw new Error(
+        'Missing /logo.mind. Generate it from logo.jpg using MindAR Compiler and place it in public/logo.mind.',
+      );
+    }
   }
 
   private waitForMindARGlobal(timeoutMs = 4000): Promise<void> {
